@@ -1,0 +1,16 @@
+{
+  "BACKUP_PREFIX": "mcp-server",
+  "BUILD_COMMAND": "echo 'No build needed for Python MCP server'",
+  "DEPLOY_PATH": "/var/www/mcp.arkturian.com",
+  "DEV_BRANCH": "dev",
+  "INSTALL_DEPS_COMMAND": "pip install -r requirements.txt",
+  "MAIN_BRANCH": "main",
+  "NODE_VERSION": "18",
+  "PROJECT_NAME": "MCP Server",
+  "PROJECT_SLUG": "mcp-server",
+  "REPO_ROOT": "/Volumes/DatenAP/Code/mcp-server",
+  "SITE_URL": "https://mcp.arkturian.com",
+  "STARTER_PATH": "/Volumes/DatenAP/Code/github-starterpack",
+  "WEB_GROUP": "www-data",
+  "WEB_USER": "www-data"
+}
