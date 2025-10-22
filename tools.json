@@ -1,0 +1,249 @@
+[
+    {
+        "name": "assets_list",
+        "description": "List and search storage objects with advanced filtering",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mine": {
+                    "type": "boolean",
+                    "description": "Limit to caller's own items (default true)"
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Filter by context field"
+                },
+                "collection_id": {
+                    "type": "string",
+                    "description": "Filter by exact collection id"
+                },
+                "collection_like": {
+                    "type": "string",
+                    "description": "Filter by collection name pattern"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Filter by filename"
+                },
+                "ext": {
+                    "type": "string",
+                    "description": "Filter by file extension"
+                },
+                "link_id": {
+                    "type": "string",
+                    "description": "Filter by link_id"
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 100,
+                    "description": "Maximum number of results"
+                }
+            }
+        }
+    },
+    {
+        "name": "assets_get",
+        "description": "Get complete storage object with AI-analyzed metadata.\n\nReturns comprehensive data including:\n- Basic info: id, title, file_url, mime_type, dimensions\n- AI fields: ai_title, ai_tags, ai_safety_rating, ai_collections\n- ai_context_metadata: Full structured analysis including:\n  * product_analysis: productType, category, colors, targetAudience\n  * visual_analysis: colorAnalysis, composition, quality, aesthetics\n  * layout_intelligence: visualHarmonyTags, pairingSuggestions, contrastLevel\n  * semantic_properties: keywords, useCases, emotionalAppeal\n\nThis data powers semantic search, AI recommendations, and automated cataloging.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Storage object ID"
+                }
+            },
+            "required": [
+                "id"
+            ]
+        }
+    },
+    {
+        "name": "assets_similar",
+        "description": "Find semantically similar objects using Knowledge Graph embeddings.\n\nUses 3072-dim vectors in Chroma DB to find visual and semantic matches.\nDistance scores: 0.0-0.3 (very similar), 0.3-0.7 (related), 0.7+ (different).\nResults ranked by cosine distance.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Storage object ID to find similar items for"
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Maximum number of similar results"
+                }
+            },
+            "required": [
+                "id"
+            ]
+        }
+    },
+    {
+        "name": "media_preview",
+        "description": "Get media preview URL with optional transformations",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Media object ID"
+                },
+                "variant": {
+                    "type": "string",
+                    "description": "Preview variant (thumbnail, small, medium, large)"
+                },
+                "display_for": {
+                    "type": "string",
+                    "description": "Display intent (figma-feed | web | print)"
+                },
+                "width": {
+                    "type": "integer",
+                    "description": "Target width"
+                },
+                "height": {
+                    "type": "integer",
+                    "description": "Target height"
+                },
+                "format": {
+                    "type": "string",
+                    "description": "Output format (jpg, png, webp)"
+                },
+                "quality": {
+                    "type": "integer",
+                    "description": "Quality (1-100)"
+                }
+            },
+            "required": [
+                "id"
+            ]
+        }
+    },
+    {
+        "name": "kg_embed",
+        "description": "Create or refresh embedding for storage object",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Storage object ID"
+                }
+            },
+            "required": [
+                "id"
+            ]
+        }
+    },
+    {
+        "name": "kg_stats",
+        "description": "Get Knowledge Graph statistics and health metrics.\n\nReturns total embeddings, breakdown by tenant, vector dimensions (3072), and system status.\nUse this to monitor embedding coverage and verify multi-tenancy isolation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "assets_refs",
+        "description": "Resolve asset variant references (thumb/preview/print/hls) by link, collection, or object id",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "link_id": {
+                    "type": "string",
+                    "description": "Group assets by link id"
+                },
+                "collection_id": {
+                    "type": "string",
+                    "description": "Filter by collection id"
+                },
+                "object_id": {
+                    "type": "integer",
+                    "description": "Pin to a specific object id"
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Filter by metadata_json.role"
+                },
+                "mine": {
+                    "type": "boolean",
+                    "description": "Limit to caller's own items (default true)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 100,
+                    "description": "Maximum results"
+                }
+            }
+        }
+    },
+    {
+        "name": "kg_health",
+        "description": "Knowledge Graph health and configuration",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "kg_search",
+        "description": "Semantic text search across all storage objects.\n\nNatural language search powered by OpenAI embeddings. Understands synonyms, context, and visual concepts.\nExample: \"red motocross gloves for mountain biking\" finds relevant products even without exact keyword matches.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string"
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 10
+                },
+                "collection_like": {
+                    "type": "string"
+                },
+                "mine": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "query"
+            ]
+        }
+    },
+    {
+        "name": "assets_get_embedding_text",
+        "description": "Get the embedding text for a storage object. Returns the 400-1000 char description used for semantic search (converted to 3072-dim vector).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Storage object ID"
+                }
+            },
+            "required": [
+                "id"
+            ]
+        }
+    },
+    {
+        "name": "assets_update_embedding_text",
+        "description": "Update embedding text and regenerate Knowledge Graph vector. The system will save the new text and automatically generate a new 3072-dim vector for semantic search.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Storage object ID"
+                },
+                "embedding_text": {
+                    "type": "string",
+                    "description": "New embedding description (recommended: 400-1000 characters)"
+                }
+            },
+            "required": [
+                "id",
+                "embedding_text"
+            ]
+        }
+    }
+]
