@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="{{REPO_ROOT}}"
+REPO_ROOT="/Volumes/DatenAP/Code/mcp-server"
 SCRIPTS_DIR="$REPO_ROOT/.devops/scripts"
 
 usage() {
