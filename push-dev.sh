@@ -1,0 +1,1 @@
+/Volumes/DatenAP/Code/mcp-server/.devops/scripts/push-dev.sh

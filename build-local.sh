@@ -1,0 +1,1 @@
+/Volumes/DatenAP/Code/mcp-server/.devops/scripts/build-local.sh
