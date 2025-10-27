@@ -374,7 +374,7 @@ async def oneal_products_list(
     Each product includes:
     - All original O'Neal product data (name, price, category, etc.)
     - storage.id: Storage object ID
-    - storage.media_url: Transformable media URL (https://api.arkturian.com/storage/media/{id})
+    - storage.media_url: Transformable media URL (https://api-storage.arkturian.com/storage/media/{id})
     - storage.thumbnail_url: Pre-generated thumbnail
     - storage.ai_title: AI-generated product title
     - storage.ai_tags: AI-extracted keywords
