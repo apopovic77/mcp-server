@@ -225,7 +225,7 @@ async def storage_media_preview(
         format=format,
         quality=quality,
     )
-    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_add_params(options)
+    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
     return {"url": str(url), "parameters": options}
 
 
@@ -525,7 +525,7 @@ async def oneal_storage_media_preview(
         format=format,
         quality=quality,
     )
-    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_add_params(options)
+    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
     return {"url": str(url), "parameters": options}
 
 
