@@ -230,6 +230,57 @@ async def storage_media_preview(
 
 
 @storage_mcp.tool(
+    name="media_as_data_url",
+    description="""Load a media asset and return it as a Base64 Data URL.
+
+    This is useful for displaying images in environments with Content Security Policy restrictions
+    (like Claude Web Artifacts) that don't allow external image URLs.
+
+    Returns a data URL like: data:image/png;base64,iVBORw0KGgo...
+    """,
+)
+async def storage_media_as_data_url(
+    id: int,  # noqa: A002
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    format: Optional[str] = None,
+    quality: Optional[int] = None,
+) -> Dict[str, Any]:
+    import base64
+
+    # Build URL with optional parameters
+    options = _clean_params(
+        width=width,
+        height=height,
+        format=format,
+        quality=quality,
+    )
+    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
+
+    # Fetch the image
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        response = await client.get(str(url))
+        response.raise_for_status()
+
+        # Get content type
+        content_type = response.headers.get("content-type", "image/png")
+
+        # Convert to base64
+        image_bytes = response.content
+        base64_data = base64.b64encode(image_bytes).decode('utf-8')
+
+        # Create data URL
+        data_url = f"data:{content_type};base64,{base64_data}"
+
+        return {
+            "data_url": data_url,
+            "content_type": content_type,
+            "size_bytes": len(image_bytes),
+            "size_kb": round(len(image_bytes) / 1024, 2),
+        }
+
+
+@storage_mcp.tool(
     name="kg_embed",
     description="Create or refresh embeddings for a storage object.",
 )
@@ -527,6 +578,57 @@ async def oneal_storage_media_preview(
     )
     url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
     return {"url": str(url), "parameters": options}
+
+
+@oneal_storage_mcp.tool(
+    name="media_as_data_url",
+    description="""Load an O'Neal media asset and return it as a Base64 Data URL.
+
+    This is useful for displaying images in environments with Content Security Policy restrictions
+    (like Claude Web Artifacts) that don't allow external image URLs.
+
+    Returns a data URL like: data:image/png;base64,iVBORw0KGgo...
+    """,
+)
+async def oneal_storage_media_as_data_url(
+    id: int,  # noqa: A002
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    format: Optional[str] = None,
+    quality: Optional[int] = None,
+) -> Dict[str, Any]:
+    import base64
+
+    # Build URL with optional parameters
+    options = _clean_params(
+        width=width,
+        height=height,
+        format=format,
+        quality=quality,
+    )
+    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
+
+    # Fetch the image
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        response = await client.get(str(url))
+        response.raise_for_status()
+
+        # Get content type
+        content_type = response.headers.get("content-type", "image/png")
+
+        # Convert to base64
+        image_bytes = response.content
+        base64_data = base64.b64encode(image_bytes).decode('utf-8')
+
+        # Create data URL
+        data_url = f"data:{content_type};base64,{base64_data}"
+
+        return {
+            "data_url": data_url,
+            "content_type": content_type,
+            "size_bytes": len(image_bytes),
+            "size_kb": round(len(image_bytes) / 1024, 2),
+        }
 
 
 @oneal_storage_mcp.tool(
