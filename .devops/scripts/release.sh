@@ -2,11 +2,13 @@
 
 set -euo pipefail
 
-REPO_ROOT="/Volumes/DatenAP/Code/mcp-server"
+# Resolve repository root relative to this script so it works anywhere.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 DEV_BRANCH="dev"
 MAIN_BRANCH="main"
-CHECKOUT_SCRIPT="$(dirname "$0")/checkout-branch.sh"
-BUILD_SCRIPT="$(dirname "$0")/build-local.sh"
+CHECKOUT_SCRIPT="$SCRIPT_DIR/checkout-branch.sh"
+BUILD_SCRIPT="$SCRIPT_DIR/build-local.sh"
 
 usage() {
   cat <<'USAGE'
