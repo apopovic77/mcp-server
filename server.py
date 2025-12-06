@@ -2,19 +2,20 @@
 """
 Arkturian MCP Server
 
-Exposes four MCP endpoint groups over HTTP/SSE with per-tenant isolation:
+Exposes MCP endpoint groups over HTTP/SSE with per-tenant isolation:
   • /storage        – Arkturian tenant Storage & Knowledge Graph tools
   • /oneal          – O'Neal product catalogue API
   • /oneal-storage  – O'Neal tenant Storage & Knowledge Graph tools (615 products)
-  • /artrack        – Artrack GPS tracking & route management API
+  • /codepilot      – Human-in-the-loop tools (Telegram notifications & questions)
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import AsyncExitStack
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 import uvicorn
@@ -36,9 +37,9 @@ ONEAL_API_KEY = os.getenv("ONEAL_API_KEY", "oneal_demo_token")
 # O'Neal Storage API (same base URL as Arkturian, different API key for tenant isolation)
 ONEAL_STORAGE_API_KEY = os.getenv("ONEAL_STORAGE_API_KEY", "")
 
-# Artrack API
-ARTRACK_API_BASE = os.getenv("ARTRACK_API_BASE", "https://api-artrack.arkturian.com")
-ARTRACK_API_KEY = os.getenv("ARTRACK_API_KEY", "")
+# Telegram API for human-in-the-loop
+TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "https://telegram-api.arkturian.com")
+TELEGRAM_API_KEY = os.getenv("TELEGRAM_API_KEY", "")
 
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
@@ -48,7 +49,6 @@ if not STORAGE_API_KEY:
     raise RuntimeError("ARKTURIAN_API_KEY environment variable must be set.")
 if not ONEAL_STORAGE_API_KEY:
     raise RuntimeError("ONEAL_STORAGE_API_KEY environment variable must be set.")
-# ARTRACK_API_KEY is optional - artrack endpoints will fail if not set but server will still run
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("arkturian-mcp")
@@ -56,7 +56,7 @@ logger = logging.getLogger("arkturian-mcp")
 STORAGE_PATH = "/storage"
 ONEAL_PATH = "/oneal"
 ONEAL_STORAGE_PATH = "/oneal-storage"
-ARTRACK_PATH = "/artrack"
+CODEPILOT_PATH = "/codepilot"
 
 # --------------------------------------------------------------------------- #
 # HTTP helpers
@@ -137,21 +137,35 @@ async def call_oneal_storage_api(
     )
 
 
-async def call_artrack_api(
+async def call_telegram_api(
     method: str,
     endpoint: str,
     *,
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
+    timeout: float = 120.0,
 ) -> Any:
-    """Call Artrack API for GPS tracking and route management."""
-    return await _fetch_json(
-        method,
-        f"{ARTRACK_API_BASE}{endpoint}",
-        headers={"X-API-KEY": ARTRACK_API_KEY},
-        params=params,
-        json_body=json_body,
-    )
+    """Call Telegram intervention API for human-in-the-loop."""
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            url = f"{TELEGRAM_API_BASE}{endpoint}"
+            headers = {"X-API-Key": TELEGRAM_API_KEY}
+
+            if method == "GET":
+                response = await client.get(url, headers=headers, params=params or {})
+            elif method == "POST":
+                response = await client.post(url, headers=headers, json=json_body or {})
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            logger.error("Telegram API error %s %s: %s", method, url, exc.response.text)
+            raise
+        except httpx.HTTPError as exc:
+            logger.error("Telegram API request to %s failed: %s", url, exc)
+            raise
 
 
 def _clean_params(**kwargs: Any) -> Dict[str, Any]:
@@ -772,127 +786,151 @@ async def oneal_storage_assets_update_embedding_text(
     )
 
 
-# Artrack MCP --------------------------------------------------------------
-artrack_mcp = FastMCP(
-    name="artrack-api",
+# CodePilot MCP (Human-in-the-loop) ------------------------------------------
+codepilot_mcp = FastMCP(
+    name="codepilot-human",
     streamable_http_path="/",
     stateless_http=True,
     log_level="INFO",
 )
 
 
-@artrack_mcp.tool(
-    name="tracks_list",
-    description="List all tracks for the authenticated user.",
-)
-async def artrack_tracks_list() -> Dict[str, Any]:
-    return await call_artrack_api("GET", "/tracks/")
+@codepilot_mcp.tool(
+    name="notify_human",
+    description="""Send a notification to the human via Telegram.
 
+    Use this to inform the human about:
+    - Successful completion of a task
+    - Errors or failures that occurred
+    - Important status updates
 
-@artrack_mcp.tool(
-    name="track_pretty",
-    description="""Get human-readable track overview.
-
-    Returns a clean summary of all routes with:
-    - Route name, description, color
-    - Total length in km
-    - POI count
-    - Segment count
-
-    No coordinates or technical metadata - just the essentials.
+    The message is sent immediately and does not wait for a response.
     """,
 )
-async def artrack_track_pretty(track_id: int) -> Dict[str, Any]:
-    return await call_artrack_api("GET", f"/tracks/{track_id}/pretty")
+async def codepilot_notify_human(message: str) -> Dict[str, Any]:
+    """Send notification to human via Telegram."""
+    if not TELEGRAM_API_KEY:
+        return {"error": "TELEGRAM_API_KEY not configured", "sent": False}
+
+    try:
+        result = await call_telegram_api(
+            "POST",
+            "/interventions/notification",
+            json_body={"message": message},
+        )
+        return {"sent": result.get("sent", False), "message_id": result.get("message_id")}
+    except Exception as e:
+        logger.error("Failed to send notification: %s", e)
+        return {"error": str(e), "sent": False}
 
 
-@artrack_mcp.tool(
-    name="routes_ids",
-    description="Get list of route IDs for a track. Simple endpoint for iteration.",
-)
-async def artrack_routes_ids(track_id: int) -> Dict[str, Any]:
-    return await call_artrack_api("GET", f"/tracks/{track_id}/routes-ids")
+@codepilot_mcp.tool(
+    name="ask_human",
+    description="""Ask the human a question via Telegram and wait for their response.
 
+    Two modes:
+    1. With options (buttons): ask_human("Deploy?", options=["Yes", "No"])
+       → Shows inline buttons, returns the clicked option
 
-@artrack_mcp.tool(
-    name="route_pretty",
-    description="""Get human-readable route detail.
+    2. Without options (text input): ask_human("What color code should I use?")
+       → User types free text response
 
-    Returns:
-    - Route info with total length in km
-    - POIs with name, description, type, and position (km)
-    - Segments with name, description, start/end km, and length
+    IMPORTANT: Only use this tool when explicitly requested in the prompt.
+    Examples of explicit requests:
+    - "frag mich wenn du soweit bist"
+    - "ask me about the color"
+    - "frag mich wenn du nicht weiter weißt"
 
-    No coordinates, no technical metadata - just the essentials.
+    Returns the human's response or error if timeout/failure.
+    Default timeout: 5 minutes.
     """,
 )
-async def artrack_route_pretty(track_id: int, route_id: int) -> Dict[str, Any]:
-    return await call_artrack_api("GET", f"/tracks/{track_id}/routes/{route_id}/pretty")
-
-
-@artrack_mcp.tool(
-    name="pois_pretty",
-    description="""Get human-readable list of all POIs for a track.
-
-    Returns all Points of Interest with:
-    - id, name, description, type
-    - Position along route (km)
-    - Route assignment (route_id, route_name)
-
-    Optional: Filter by route_id.
-    """,
-)
-async def artrack_pois_pretty(
-    track_id: int,
-    route_id: Optional[int] = None,
+async def codepilot_ask_human(
+    question: str,
+    options: Optional[List[str]] = None,
+    timeout_seconds: int = 300,
 ) -> Dict[str, Any]:
-    params = _clean_params(route_id=route_id)
-    return await call_artrack_api("GET", f"/tracks/{track_id}/pois-pretty", params=params)
+    """Ask human a question and wait for response."""
+    if not TELEGRAM_API_KEY:
+        return {"error": "TELEGRAM_API_KEY not configured", "response": None}
 
+    try:
+        # Determine endpoint based on options
+        if options and len(options) > 0:
+            # Approval request with buttons
+            create_result = await call_telegram_api(
+                "POST",
+                "/interventions/approval",
+                json_body={
+                    "message": question,
+                    "options": options,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+        else:
+            # Text input request
+            create_result = await call_telegram_api(
+                "POST",
+                "/interventions/text-input",
+                json_body={
+                    "message": question,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
 
-@artrack_mcp.tool(
-    name="segments_pretty",
-    description="""Get human-readable list of all segments for a track.
+        request_id = create_result.get("id")
+        if not request_id:
+            return {"error": "Failed to create intervention request", "response": None}
 
-    Returns all segments with:
-    - id, name, description
-    - Start/end position (km)
-    - Length (km)
-    - Route assignment (route_id, route_name)
-    - Complete flag (has both start and end markers)
+        # Wait for response (poll with 60s intervals, API max is 120s)
+        start_time = time.time()
+        max_poll = 60
 
-    Optional: Filter by route_id.
-    """,
-)
-async def artrack_segments_pretty(
-    track_id: int,
-    route_id: Optional[int] = None,
-) -> Dict[str, Any]:
-    params = _clean_params(route_id=route_id)
-    return await call_artrack_api("GET", f"/tracks/{track_id}/segments-pretty", params=params)
+        while True:
+            elapsed = time.time() - start_time
+            remaining = timeout_seconds - elapsed
 
+            if remaining <= 0:
+                return {
+                    "error": "Timeout waiting for human response",
+                    "response": None,
+                    "request_id": request_id,
+                }
 
-@artrack_mcp.tool(
-    name="routes_list",
-    description="List all routes for a track with full metadata.",
-)
-async def artrack_routes_list(track_id: int) -> Dict[str, Any]:
-    return await call_artrack_api("GET", f"/tracks/{track_id}/routes")
+            poll_timeout = max(1, min(max_poll, int(remaining)))
 
+            wait_result = await call_telegram_api(
+                "GET",
+                f"/interventions/{request_id}/wait",
+                params={"timeout": poll_timeout},
+                timeout=poll_timeout + 10,
+            )
 
-@artrack_mcp.tool(
-    name="service_health",
-    description="Health check for the Artrack API.",
-)
-async def artrack_service_health() -> Dict[str, Any]:
-    return await call_artrack_api("GET", "/health")
+            status = wait_result.get("status")
+            if status == "responded":
+                return {
+                    "response": wait_result.get("response") or wait_result.get("response_text"),
+                    "responded_by": wait_result.get("responded_by"),
+                    "request_id": request_id,
+                }
+            elif status in ("expired", "cancelled"):
+                return {
+                    "error": f"Request {status}",
+                    "response": None,
+                    "request_id": request_id,
+                }
+            # Still pending, continue polling
+
+    except Exception as e:
+        logger.error("Failed to ask human: %s", e)
+        return {"error": str(e), "response": None}
 
 
 # --------------------------------------------------------------------------- #
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="arkturian-mcp", version="2.3.0", description="Arkturian MCP Aggregator with per-tenant isolation")
+app = FastAPI(title="arkturian-mcp", version="2.3.0", description="Arkturian MCP Aggregator with human-in-the-loop")
 
 app.add_middleware(
     CORSMiddleware,
@@ -906,16 +944,16 @@ app.add_middleware(
 storage_app = storage_mcp.streamable_http_app()
 oneal_app = oneal_mcp.streamable_http_app()
 oneal_storage_app = oneal_storage_mcp.streamable_http_app()
-artrack_app = artrack_mcp.streamable_http_app()
+codepilot_app = codepilot_mcp.streamable_http_app()
 app.mount(STORAGE_PATH, storage_app)
 app.mount(ONEAL_PATH, oneal_app)
 app.mount(ONEAL_STORAGE_PATH, oneal_storage_app)
-app.mount(ARTRACK_PATH, artrack_app)
+app.mount(CODEPILOT_PATH, codepilot_app)
 
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
 _oneal_storage_stack = AsyncExitStack()
-_artrack_stack = AsyncExitStack()
+_codepilot_stack = AsyncExitStack()
 
 
 @app.on_event("startup")
@@ -929,14 +967,14 @@ async def startup() -> None:
     await _oneal_storage_stack.enter_async_context(oneal_storage_mcp.session_manager.run())
     await oneal_storage_app.router.startup()
 
-    await _artrack_stack.enter_async_context(artrack_mcp.session_manager.run())
-    await artrack_app.router.startup()
+    await _codepilot_stack.enter_async_context(codepilot_mcp.session_manager.run())
+    await codepilot_app.router.startup()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    await artrack_app.router.shutdown()
-    await _artrack_stack.aclose()
+    await codepilot_app.router.shutdown()
+    await _codepilot_stack.aclose()
 
     await oneal_storage_app.router.shutdown()
     await _oneal_storage_stack.aclose()
@@ -954,7 +992,7 @@ async def root() -> Dict[str, Any]:
     return {
         "name": "arkturian-mcp",
         "version": "2.3.0",
-        "description": "Arkturian MCP Aggregator with per-tenant isolation",
+        "description": "Arkturian MCP Aggregator with per-tenant isolation and human-in-the-loop",
         "endpoints": {
             "storage": {
                 "path": STORAGE_PATH,
@@ -973,10 +1011,11 @@ async def root() -> Dict[str, Any]:
                 "tools": [tool.name for tool in oneal_storage_mcp._tool_manager.list_tools()],
                 "upstream": STORAGE_API_BASE,
             },
-            "artrack": {
-                "path": ARTRACK_PATH,
-                "tools": [tool.name for tool in artrack_mcp._tool_manager.list_tools()],
-                "upstream": ARTRACK_API_BASE,
+            "codepilot": {
+                "path": CODEPILOT_PATH,
+                "tools": [tool.name for tool in codepilot_mcp._tool_manager.list_tools()],
+                "upstream": TELEGRAM_API_BASE,
+                "description": "Human-in-the-loop tools for CodePilot",
             },
         },
     }
@@ -1004,12 +1043,6 @@ async def health() -> Dict[str, Any]:
     except httpx.HTTPError as exc:
         results["status"] = "degraded"
         results["storage_oneal_error"] = str(exc)
-
-    try:
-        results["artrack"] = await artrack_service_health()
-    except httpx.HTTPError as exc:
-        results["status"] = "degraded"
-        results["artrack_error"] = str(exc)
 
     if results["status"] != "healthy":
         raise HTTPException(status_code=207, detail=results)
@@ -1039,10 +1072,11 @@ async def well_known(request: Request) -> JSONResponse:
                     "tenant": "oneal",
                     "url": f"{base_url}{ONEAL_STORAGE_PATH}/",
                 },
-                "artrack": {
-                    "name": "artrack-api",
+                "codepilot": {
+                    "name": "codepilot-human",
                     "version": "1.0.0",
-                    "url": f"{base_url}{ARTRACK_PATH}/",
+                    "description": "Human-in-the-loop tools for CodePilot",
+                    "url": f"{base_url}{CODEPILOT_PATH}/",
                 },
             }
         }
