@@ -6,6 +6,7 @@ Exposes MCP endpoint groups over HTTP/SSE with per-tenant isolation:
   • /storage        – Arkturian tenant Storage & Knowledge Graph tools
   • /oneal          – O'Neal product catalogue API
   • /oneal-storage  – O'Neal tenant Storage & Knowledge Graph tools (615 products)
+  • /artrack        – Artrack GPS tracking & route management API
   • /codepilot      – Human-in-the-loop tools (Telegram notifications & questions)
 """
 
@@ -37,6 +38,10 @@ ONEAL_API_KEY = os.getenv("ONEAL_API_KEY", "oneal_demo_token")
 # O'Neal Storage API (same base URL as Arkturian, different API key for tenant isolation)
 ONEAL_STORAGE_API_KEY = os.getenv("ONEAL_STORAGE_API_KEY", "")
 
+# Artrack API
+ARTRACK_API_BASE = os.getenv("ARTRACK_API_BASE", "https://api-artrack.arkturian.com")
+ARTRACK_API_KEY = os.getenv("ARTRACK_API_KEY", "")
+
 # Telegram API for human-in-the-loop
 TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "https://telegram-api.arkturian.com")
 TELEGRAM_API_KEY = os.getenv("TELEGRAM_API_KEY", "")
@@ -56,6 +61,7 @@ logger = logging.getLogger("arkturian-mcp")
 STORAGE_PATH = "/storage"
 ONEAL_PATH = "/oneal"
 ONEAL_STORAGE_PATH = "/oneal-storage"
+ARTRACK_PATH = "/artrack"
 CODEPILOT_PATH = "/codepilot"
 
 # --------------------------------------------------------------------------- #
@@ -132,6 +138,23 @@ async def call_oneal_storage_api(
         method,
         f"{STORAGE_API_BASE}{endpoint}",
         headers={"X-API-KEY": ONEAL_STORAGE_API_KEY},
+        params=params,
+        json_body=json_body,
+    )
+
+
+async def call_artrack_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call Artrack API for GPS tracking and route management."""
+    return await _fetch_json(
+        method,
+        f"{ARTRACK_API_BASE}{endpoint}",
+        headers={"X-API-KEY": ARTRACK_API_KEY},
         params=params,
         json_body=json_body,
     )
@@ -786,6 +809,122 @@ async def oneal_storage_assets_update_embedding_text(
     )
 
 
+# Artrack MCP --------------------------------------------------------------
+artrack_mcp = FastMCP(
+    name="artrack-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@artrack_mcp.tool(
+    name="tracks_list",
+    description="List all tracks for the authenticated user.",
+)
+async def artrack_tracks_list() -> Dict[str, Any]:
+    return await call_artrack_api("GET", "/tracks/")
+
+
+@artrack_mcp.tool(
+    name="track_pretty",
+    description="""Get human-readable track overview.
+
+    Returns a clean summary of all routes with:
+    - Route name, description, color
+    - Total length in km
+    - POI count
+    - Segment count
+
+    No coordinates or technical metadata - just the essentials.
+    """,
+)
+async def artrack_track_pretty(track_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/tracks/{track_id}/pretty")
+
+
+@artrack_mcp.tool(
+    name="routes_ids",
+    description="Get list of route IDs for a track. Simple endpoint for iteration.",
+)
+async def artrack_routes_ids(track_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/tracks/{track_id}/routes-ids")
+
+
+@artrack_mcp.tool(
+    name="route_pretty",
+    description="""Get human-readable route detail.
+
+    Returns:
+    - Route info with total length in km
+    - POIs with name, description, type, and position (km)
+    - Segments with name, description, start/end km, and length
+
+    No coordinates, no technical metadata - just the essentials.
+    """,
+)
+async def artrack_route_pretty(track_id: int, route_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/tracks/{track_id}/routes/{route_id}/pretty")
+
+
+@artrack_mcp.tool(
+    name="pois_pretty",
+    description="""Get human-readable list of all POIs for a track.
+
+    Returns all Points of Interest with:
+    - id, name, description, type
+    - Position along route (km)
+    - Route assignment (route_id, route_name)
+
+    Optional: Filter by route_id.
+    """,
+)
+async def artrack_pois_pretty(
+    track_id: int,
+    route_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    params = _clean_params(route_id=route_id)
+    return await call_artrack_api("GET", f"/tracks/{track_id}/pois-pretty", params=params)
+
+
+@artrack_mcp.tool(
+    name="segments_pretty",
+    description="""Get human-readable list of all segments for a track.
+
+    Returns all segments with:
+    - id, name, description
+    - Start/end position (km)
+    - Length (km)
+    - Route assignment (route_id, route_name)
+    - Complete flag (has both start and end markers)
+
+    Optional: Filter by route_id.
+    """,
+)
+async def artrack_segments_pretty(
+    track_id: int,
+    route_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    params = _clean_params(route_id=route_id)
+    return await call_artrack_api("GET", f"/tracks/{track_id}/segments-pretty", params=params)
+
+
+@artrack_mcp.tool(
+    name="routes_list",
+    description="List all routes for a track with full metadata.",
+)
+async def artrack_routes_list(track_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/tracks/{track_id}/routes")
+
+
+@artrack_mcp.tool(
+    name="service_health",
+    description="Health check for the Artrack API.",
+)
+async def artrack_service_health() -> Dict[str, Any]:
+    return await call_artrack_api("GET", "/health")
+
+
 # CodePilot MCP (Human-in-the-loop) ------------------------------------------
 codepilot_mcp = FastMCP(
     name="codepilot-human",
@@ -944,15 +1083,18 @@ app.add_middleware(
 storage_app = storage_mcp.streamable_http_app()
 oneal_app = oneal_mcp.streamable_http_app()
 oneal_storage_app = oneal_storage_mcp.streamable_http_app()
+artrack_app = artrack_mcp.streamable_http_app()
 codepilot_app = codepilot_mcp.streamable_http_app()
 app.mount(STORAGE_PATH, storage_app)
 app.mount(ONEAL_PATH, oneal_app)
 app.mount(ONEAL_STORAGE_PATH, oneal_storage_app)
+app.mount(ARTRACK_PATH, artrack_app)
 app.mount(CODEPILOT_PATH, codepilot_app)
 
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
 _oneal_storage_stack = AsyncExitStack()
+_artrack_stack = AsyncExitStack()
 _codepilot_stack = AsyncExitStack()
 
 
@@ -967,6 +1109,9 @@ async def startup() -> None:
     await _oneal_storage_stack.enter_async_context(oneal_storage_mcp.session_manager.run())
     await oneal_storage_app.router.startup()
 
+    await _artrack_stack.enter_async_context(artrack_mcp.session_manager.run())
+    await artrack_app.router.startup()
+
     await _codepilot_stack.enter_async_context(codepilot_mcp.session_manager.run())
     await codepilot_app.router.startup()
 
@@ -975,6 +1120,9 @@ async def startup() -> None:
 async def shutdown() -> None:
     await codepilot_app.router.shutdown()
     await _codepilot_stack.aclose()
+
+    await artrack_app.router.shutdown()
+    await _artrack_stack.aclose()
 
     await oneal_storage_app.router.shutdown()
     await _oneal_storage_stack.aclose()
@@ -1011,6 +1159,11 @@ async def root() -> Dict[str, Any]:
                 "tools": [tool.name for tool in oneal_storage_mcp._tool_manager.list_tools()],
                 "upstream": STORAGE_API_BASE,
             },
+            "artrack": {
+                "path": ARTRACK_PATH,
+                "tools": [tool.name for tool in artrack_mcp._tool_manager.list_tools()],
+                "upstream": ARTRACK_API_BASE,
+            },
             "codepilot": {
                 "path": CODEPILOT_PATH,
                 "tools": [tool.name for tool in codepilot_mcp._tool_manager.list_tools()],
@@ -1044,6 +1197,12 @@ async def health() -> Dict[str, Any]:
         results["status"] = "degraded"
         results["storage_oneal_error"] = str(exc)
 
+    try:
+        results["artrack"] = await artrack_service_health()
+    except httpx.HTTPError as exc:
+        results["status"] = "degraded"
+        results["artrack_error"] = str(exc)
+
     if results["status"] != "healthy":
         raise HTTPException(status_code=207, detail=results)
     return results
@@ -1071,6 +1230,11 @@ async def well_known(request: Request) -> JSONResponse:
                     "version": "1.0.0",
                     "tenant": "oneal",
                     "url": f"{base_url}{ONEAL_STORAGE_PATH}/",
+                },
+                "artrack": {
+                    "name": "artrack-api",
+                    "version": "1.0.0",
+                    "url": f"{base_url}{ARTRACK_PATH}/",
                 },
                 "codepilot": {
                     "name": "codepilot-human",
