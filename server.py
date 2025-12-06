@@ -31,6 +31,9 @@ STORAGE_API_KEY = os.getenv("ARKTURIAN_API_KEY", "")
 ONEAL_API_BASE = os.getenv("ONEAL_API_BASE", "https://oneal-api.arkturian.com")
 ONEAL_API_KEY = os.getenv("ONEAL_API_KEY", "oneal_demo_token")
 
+ARTRACK_API_BASE = os.getenv("ARTRACK_API_BASE", "https://api-artrack.arkturian.com")
+ARTRACK_API_KEY = os.getenv("ARTRACK_API_KEY", "")
+
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
 HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "30.0"))
@@ -38,11 +41,15 @@ HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "30.0"))
 if not STORAGE_API_KEY:
     raise RuntimeError("ARKTURIAN_API_KEY environment variable must be set.")
 
+if not ARTRACK_API_KEY:
+    raise RuntimeError("ARTRACK_API_KEY environment variable must be set.")
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("arkturian-mcp")
 
 STORAGE_PATH = "/storage"
 ONEAL_PATH = "/oneal"
+ARTRACK_PATH = "/artrack"
 
 # --------------------------------------------------------------------------- #
 # HTTP helpers
@@ -103,6 +110,22 @@ async def call_oneal_api(
         f"{ONEAL_API_BASE}{endpoint}",
         headers={"X-API-Key": ONEAL_API_KEY},
         params=params,
+    )
+
+
+async def call_artrack_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    return await _fetch_json(
+        method,
+        f"{ARTRACK_API_BASE}{endpoint}",
+        headers={"X-API-KEY": ARTRACK_API_KEY},
+        params=params,
+        json_body=json_body,
     )
 
 
@@ -415,11 +438,127 @@ async def oneal_service_ping() -> Dict[str, Any]:
     return await call_oneal_api("GET", "/v1/ping")
 
 
+# Artrack MCP --------------------------------------------------------------
+artrack_mcp = FastMCP(
+    name="artrack-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@artrack_mcp.tool(
+    name="tracks_list",
+    description="List all tracks for the authenticated user.",
+)
+async def artrack_tracks_list() -> Dict[str, Any]:
+    return await call_artrack_api("GET", "/tracks/")
+
+
+@artrack_mcp.tool(
+    name="track_pretty",
+    description="""Get human-readable track overview.
+
+    Returns a clean summary of all routes with:
+    - Route name, description, color
+    - Total length in km
+    - POI count
+    - Segment count
+
+    No coordinates or technical metadata - just the essentials.
+    """,
+)
+async def artrack_track_pretty(track_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/tracks/{track_id}/pretty")
+
+
+@artrack_mcp.tool(
+    name="routes_ids",
+    description="Get list of route IDs for a track. Simple endpoint for iteration.",
+)
+async def artrack_routes_ids(track_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/tracks/{track_id}/routes-ids")
+
+
+@artrack_mcp.tool(
+    name="route_pretty",
+    description="""Get human-readable route detail.
+
+    Returns:
+    - Route info with total length in km
+    - POIs with name, description, type, and position (km)
+    - Segments with name, description, start/end km, and length
+
+    No coordinates, no technical metadata - just the essentials.
+    """,
+)
+async def artrack_route_pretty(track_id: int, route_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/tracks/{track_id}/routes/{route_id}/pretty")
+
+
+@artrack_mcp.tool(
+    name="pois_pretty",
+    description="""Get human-readable list of all POIs for a track.
+
+    Returns all Points of Interest with:
+    - id, name, description, type
+    - Position along route (km)
+    - Route assignment (route_id, route_name)
+
+    Optional: Filter by route_id.
+    """,
+)
+async def artrack_pois_pretty(
+    track_id: int,
+    route_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    params = _clean_params(route_id=route_id)
+    return await call_artrack_api("GET", f"/tracks/{track_id}/pois-pretty", params=params)
+
+
+@artrack_mcp.tool(
+    name="segments_pretty",
+    description="""Get human-readable list of all segments for a track.
+
+    Returns all segments with:
+    - id, name, description
+    - Start/end position (km)
+    - Length (km)
+    - Route assignment (route_id, route_name)
+    - Complete flag (has both start and end markers)
+
+    Optional: Filter by route_id.
+    """,
+)
+async def artrack_segments_pretty(
+    track_id: int,
+    route_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    params = _clean_params(route_id=route_id)
+    return await call_artrack_api("GET", f"/tracks/{track_id}/segments-pretty", params=params)
+
+
+@artrack_mcp.tool(
+    name="routes_list",
+    description="List all routes for a track with full metadata.",
+)
+async def artrack_routes_list(track_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/tracks/{track_id}/routes")
+
+
+@artrack_mcp.tool(
+    name="service_health",
+    description="Health check for the Artrack API.",
+)
+async def artrack_service_health() -> Dict[str, Any]:
+    return await call_artrack_api("GET", "/health")
+
+
 # --------------------------------------------------------------------------- #
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="arkturian-mcp", version="2.1.0", description="Arkturian MCP Aggregator")
+app = FastAPI(title="arkturian-mcp", version="2.2.0", description="Arkturian MCP Aggregator")
 
 app.add_middleware(
     CORSMiddleware,
@@ -432,11 +571,14 @@ app.add_middleware(
 # Mount MCP transports
 storage_app = storage_mcp.streamable_http_app()
 oneal_app = oneal_mcp.streamable_http_app()
+artrack_app = artrack_mcp.streamable_http_app()
 app.mount(STORAGE_PATH, storage_app)
 app.mount(ONEAL_PATH, oneal_app)
+app.mount(ARTRACK_PATH, artrack_app)
 
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
+_artrack_stack = AsyncExitStack()
 
 
 @app.on_event("startup")
@@ -447,9 +589,15 @@ async def startup() -> None:
     await _oneal_stack.enter_async_context(oneal_mcp.session_manager.run())
     await oneal_app.router.startup()
 
+    await _artrack_stack.enter_async_context(artrack_mcp.session_manager.run())
+    await artrack_app.router.startup()
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await artrack_app.router.shutdown()
+    await _artrack_stack.aclose()
+
     await oneal_app.router.shutdown()
     await _oneal_stack.aclose()
 
@@ -462,7 +610,7 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "description": "Arkturian MCP Aggregator",
         "endpoints": {
             "storage": {
@@ -475,13 +623,18 @@ async def root() -> Dict[str, Any]:
                 "tools": [tool.name for tool in oneal_mcp._tool_manager.list_tools()],
                 "upstream": ONEAL_API_BASE,
             },
+            "artrack": {
+                "path": ARTRACK_PATH,
+                "tools": [tool.name for tool in artrack_mcp._tool_manager.list_tools()],
+                "upstream": ARTRACK_API_BASE,
+            },
         },
     }
 
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    """Aggregated health check for both upstream services."""
+    """Aggregated health check for all upstream services."""
     results: Dict[str, Any] = {"status": "healthy"}
     try:
         results["storage"] = await storage_kg_stats()
@@ -494,6 +647,12 @@ async def health() -> Dict[str, Any]:
     except httpx.HTTPError as exc:
         results["status"] = "degraded"
         results["oneal_error"] = str(exc)
+
+    try:
+        results["artrack"] = await artrack_service_health()
+    except httpx.HTTPError as exc:
+        results["status"] = "degraded"
+        results["artrack_error"] = str(exc)
 
     if results["status"] != "healthy":
         raise HTTPException(status_code=207, detail=results)
@@ -515,6 +674,11 @@ async def well_known(request: Request) -> JSONResponse:
                     "name": "oneal-products",
                     "version": "1.0.0",
                     "url": f"{base_url}{ONEAL_PATH}/",
+                },
+                "artrack": {
+                    "name": "artrack-api",
+                    "version": "1.0.0",
+                    "url": f"{base_url}{ARTRACK_PATH}/",
                 },
             }
         }
