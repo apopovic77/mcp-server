@@ -24,7 +24,7 @@ jobs:
           script: |
             set -e
 
-            DEPLOY_PATH="/var/www/mcp-server"
+            DEPLOY_PATH="/var/www/mcp.arkturian.com"
             SERVICE_NAME="mcp-server"
             BACKUP_DIR="/var/backups"
             BACKUP_PREFIX="mcp-server"
