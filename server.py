@@ -918,6 +918,25 @@ async def artrack_routes_list(track_id: int) -> Dict[str, Any]:
 
 
 @artrack_mcp.tool(
+    name="waypoint_get",
+    description="""Get full waypoint/POI details including complete description text.
+
+    Returns complete waypoint data:
+    - id, track_id, waypoint_type
+    - Full user_description (not truncated)
+    - Coordinates (latitude, longitude, altitude)
+    - metadata_json with title and other metadata
+    - media attachments
+    - processing and moderation status
+
+    Use this to get the full narrative text for a POI.
+    """,
+)
+async def artrack_waypoint_get(waypoint_id: int) -> Dict[str, Any]:
+    return await call_artrack_api("GET", f"/waypoints/{waypoint_id}")
+
+
+@artrack_mcp.tool(
     name="service_health",
     description="Health check for the Artrack API.",
 )
