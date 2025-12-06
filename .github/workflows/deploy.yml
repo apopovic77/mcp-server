@@ -14,7 +14,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deploy to server
+      - name: Deploy to server via rsync
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          source: "server.py,requirements.txt"
+          target: "/var/www/mcp.arkturian.com/"
+          overwrite: true
+
+      - name: Restart service and health check
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -26,44 +37,30 @@ jobs:
 
             DEPLOY_PATH="/var/www/mcp.arkturian.com"
             SERVICE_NAME="mcp-server"
-            BACKUP_DIR="/var/backups"
-            BACKUP_PREFIX="mcp-server"
-            TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-            BACKUP_PATH="$BACKUP_DIR/${BACKUP_PREFIX}-${TIMESTAMP}"
 
             cd "$DEPLOY_PATH"
 
-            # Pull latest code
-            git fetch origin main
-            git reset --hard origin/main
-
             # Install/update Python dependencies
             source venv/bin/activate
-            pip install -r requirements.txt
-
-            # Create backup of current state
-            if [ -f "server.py" ]; then
-              echo "Creating backup..."
-              mkdir -p "$BACKUP_DIR"
-              cp server.py "$BACKUP_PATH-server.py"
-            fi
+            pip install -r requirements.txt --quiet
 
             # Restart the service
             echo "Restarting $SERVICE_NAME service..."
             sudo systemctl restart $SERVICE_NAME
 
             # Wait for service to start
-            sleep 3
+            sleep 5
 
             # Health check
             echo "Running health check..."
-            if curl -sf http://localhost:8080/health > /dev/null; then
+            if curl -sf http://localhost:8080/ > /dev/null; then
               echo "✅ Health check passed!"
             else
-              echo "⚠️ Health check failed, but service may still be starting..."
+              echo "⚠️ Health check failed, checking service status..."
+              sudo systemctl status $SERVICE_NAME --no-pager
             fi
 
-            echo "Deployment completed successfully!"
+            echo "Deployment completed!"
 
       - name: Notify on success
         if: success()
