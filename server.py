@@ -48,8 +48,7 @@ if not STORAGE_API_KEY:
     raise RuntimeError("ARKTURIAN_API_KEY environment variable must be set.")
 if not ONEAL_STORAGE_API_KEY:
     raise RuntimeError("ONEAL_STORAGE_API_KEY environment variable must be set.")
-if not ARTRACK_API_KEY:
-    raise RuntimeError("ARTRACK_API_KEY environment variable must be set.")
+# ARTRACK_API_KEY is optional - artrack endpoints will fail if not set but server will still run
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("arkturian-mcp")
