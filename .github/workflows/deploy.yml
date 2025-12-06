@@ -14,20 +14,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci --production=false
-
-      - name: Build application
-        run: npm run build
-        env:
-          NODE_ENV: production
-
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -38,37 +24,46 @@ jobs:
           script: |
             set -e
 
-            REPO_PATH="/Volumes/DatenAP/Code/mcp-server"
-            DEPLOY_PATH="/var/www/mcp.arkturian.com"
+            DEPLOY_PATH="/var/www/mcp-server"
+            SERVICE_NAME="mcp-server"
             BACKUP_DIR="/var/backups"
             BACKUP_PREFIX="mcp-server"
             TIMESTAMP=$(date +%Y%m%d-%H%M%S)
             BACKUP_PATH="$BACKUP_DIR/${BACKUP_PREFIX}-${TIMESTAMP}"
 
-            cd "$REPO_PATH"
+            cd "$DEPLOY_PATH"
 
+            # Pull latest code
             git fetch origin main
             git reset --hard origin/main
 
-            npm ci --production=false
+            # Install/update Python dependencies
+            source venv/bin/activate
+            pip install -r requirements.txt
 
-            npm run build
-
-            if [ -d "$DEPLOY_PATH" ]; then
+            # Create backup of current state
+            if [ -f "server.py" ]; then
               echo "Creating backup..."
               mkdir -p "$BACKUP_DIR"
-              cp -r "$DEPLOY_PATH" "$BACKUP_PATH"
+              cp server.py "$BACKUP_PATH-server.py"
             fi
 
-            echo "Deploying new build..."
-            mkdir -p "$DEPLOY_PATH"
-            rsync -av --delete "$REPO_PATH/dist/" "$DEPLOY_PATH/"
+            # Restart the service
+            echo "Restarting $SERVICE_NAME service..."
+            sudo systemctl restart $SERVICE_NAME
 
-            chown -R www-data:www-data "$DEPLOY_PATH"
-            chmod -R 755 "$DEPLOY_PATH"
+            # Wait for service to start
+            sleep 3
+
+            # Health check
+            echo "Running health check..."
+            if curl -sf http://localhost:8080/health > /dev/null; then
+              echo "✅ Health check passed!"
+            else
+              echo "⚠️ Health check failed, but service may still be starting..."
+            fi
 
             echo "Deployment completed successfully!"
-            echo "Backup saved to: $BACKUP_PATH"
 
       - name: Notify on success
         if: success()
