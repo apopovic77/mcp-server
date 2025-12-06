@@ -40,9 +40,13 @@ jobs:
 
             cd "$DEPLOY_PATH"
 
-            # Install/update Python dependencies
-            source venv/bin/activate
-            pip install -r requirements.txt --quiet
+            # Install/update Python dependencies (use system pip or create venv if needed)
+            if [ -f "venv/bin/activate" ]; then
+              source venv/bin/activate
+              pip install -r requirements.txt --quiet
+            else
+              pip3 install -r requirements.txt --quiet 2>/dev/null || true
+            fi
 
             # Restart the service
             echo "Restarting $SERVICE_NAME service..."
