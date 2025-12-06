@@ -2,9 +2,11 @@
 """
 Arkturian MCP Server
 
-Exposes two MCP endpoint groups over HTTP/SSE:
-  • /storage – proxies Arkturian Storage & Knowledge Graph tools
-  • /oneal   – proxies the O'Neal product catalogue API
+Exposes four MCP endpoint groups over HTTP/SSE with per-tenant isolation:
+  • /storage        – Arkturian tenant Storage & Knowledge Graph tools
+  • /oneal          – O'Neal product catalogue API
+  • /oneal-storage  – O'Neal tenant Storage & Knowledge Graph tools (615 products)
+  • /artrack        – Artrack GPS tracking & route management API
 """
 
 from __future__ import annotations
@@ -31,6 +33,10 @@ STORAGE_API_KEY = os.getenv("ARKTURIAN_API_KEY", "")
 ONEAL_API_BASE = os.getenv("ONEAL_API_BASE", "https://oneal-api.arkturian.com")
 ONEAL_API_KEY = os.getenv("ONEAL_API_KEY", "oneal_demo_token")
 
+# O'Neal Storage API (same base URL as Arkturian, different API key for tenant isolation)
+ONEAL_STORAGE_API_KEY = os.getenv("ONEAL_STORAGE_API_KEY", "")
+
+# Artrack API
 ARTRACK_API_BASE = os.getenv("ARTRACK_API_BASE", "https://api-artrack.arkturian.com")
 ARTRACK_API_KEY = os.getenv("ARTRACK_API_KEY", "")
 
@@ -40,7 +46,8 @@ HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "30.0"))
 
 if not STORAGE_API_KEY:
     raise RuntimeError("ARKTURIAN_API_KEY environment variable must be set.")
-
+if not ONEAL_STORAGE_API_KEY:
+    raise RuntimeError("ONEAL_STORAGE_API_KEY environment variable must be set.")
 if not ARTRACK_API_KEY:
     raise RuntimeError("ARTRACK_API_KEY environment variable must be set.")
 
@@ -49,6 +56,7 @@ logger = logging.getLogger("arkturian-mcp")
 
 STORAGE_PATH = "/storage"
 ONEAL_PATH = "/oneal"
+ONEAL_STORAGE_PATH = "/oneal-storage"
 ARTRACK_PATH = "/artrack"
 
 # --------------------------------------------------------------------------- #
@@ -113,6 +121,23 @@ async def call_oneal_api(
     )
 
 
+async def call_oneal_storage_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call Storage API with O'Neal tenant credentials for tenant isolation."""
+    return await _fetch_json(
+        method,
+        f"{STORAGE_API_BASE}{endpoint}",
+        headers={"X-API-KEY": ONEAL_STORAGE_API_KEY},
+        params=params,
+        json_body=json_body,
+    )
+
+
 async def call_artrack_api(
     method: str,
     endpoint: str,
@@ -120,6 +145,7 @@ async def call_artrack_api(
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
 ) -> Any:
+    """Call Artrack API for GPS tracking and route management."""
     return await _fetch_json(
         method,
         f"{ARTRACK_API_BASE}{endpoint}",
@@ -224,8 +250,59 @@ async def storage_media_preview(
         format=format,
         quality=quality,
     )
-    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_add_params(options)
+    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
     return {"url": str(url), "parameters": options}
+
+
+@storage_mcp.tool(
+    name="media_as_data_url",
+    description="""Load a media asset and return it as a Base64 Data URL.
+
+    This is useful for displaying images in environments with Content Security Policy restrictions
+    (like Claude Web Artifacts) that don't allow external image URLs.
+
+    Returns a data URL like: data:image/png;base64,iVBORw0KGgo...
+    """,
+)
+async def storage_media_as_data_url(
+    id: int,  # noqa: A002
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    format: Optional[str] = None,
+    quality: Optional[int] = None,
+) -> Dict[str, Any]:
+    import base64
+
+    # Build URL with optional parameters
+    options = _clean_params(
+        width=width,
+        height=height,
+        format=format,
+        quality=quality,
+    )
+    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
+
+    # Fetch the image
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        response = await client.get(str(url))
+        response.raise_for_status()
+
+        # Get content type
+        content_type = response.headers.get("content-type", "image/png")
+
+        # Convert to base64
+        image_bytes = response.content
+        base64_data = base64.b64encode(image_bytes).decode('utf-8')
+
+        # Create data URL
+        data_url = f"data:{content_type};base64,{base64_data}"
+
+        return {
+            "data_url": data_url,
+            "content_type": content_type,
+            "size_bytes": len(image_bytes),
+            "size_kb": round(len(image_bytes) / 1024, 2),
+        }
 
 
 @storage_mcp.tool(
@@ -438,6 +515,264 @@ async def oneal_service_ping() -> Dict[str, Any]:
     return await call_oneal_api("GET", "/v1/ping")
 
 
+# O'Neal Storage MCP --------------------------------------------------------
+oneal_storage_mcp = FastMCP(
+    name="oneal-storage",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@oneal_storage_mcp.tool(
+    name="assets_list",
+    description="List O'Neal tenant storage objects with optional filters.",
+)
+async def oneal_storage_assets_list(
+    mine: Optional[bool] = True,
+    context: Optional[str] = None,
+    collection_id: Optional[str] = None,
+    collection_like: Optional[str] = None,
+    name: Optional[str] = None,
+    ext: Optional[str] = None,
+    link_id: Optional[str] = None,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    params = _clean_params(
+        mine=mine,
+        context=context,
+        collection_id=collection_id,
+        collection_like=collection_like,
+        name=name,
+        ext=ext,
+        link_id=link_id,
+        limit=limit,
+    )
+    return await call_oneal_storage_api("GET", "/storage/list", params=params)
+
+
+@oneal_storage_mcp.tool(
+    name="assets_get",
+    description="""Get complete O'Neal storage object with AI-analyzed metadata.
+
+    Returns comprehensive data including:
+    - Basic info: id, title, file_url, mime_type, dimensions
+    - AI fields: ai_title, ai_tags, ai_safety_rating, ai_collections
+    - ai_context_metadata: Full structured analysis (product_analysis, visual_analysis, layout_intelligence, semantic_properties)
+
+    The ai_context_metadata contains detailed vision AI analysis powering semantic search and recommendations.
+    """,
+)
+async def oneal_storage_assets_get(id: int) -> Dict[str, Any]:  # noqa: A002
+    return await call_oneal_storage_api("GET", f"/storage/objects/{id}")
+
+
+@oneal_storage_mcp.tool(
+    name="assets_similar",
+    description="""Find semantically similar objects in O'Neal tenant using Knowledge Graph embeddings.
+
+    Uses 3072-dim vectors in Chroma DB to find visual and semantic matches within O'Neal tenant.
+    Distance scores: 0.0-0.3 (very similar), 0.3-0.7 (related), 0.7+ (different).
+    Results ranked by cosine distance.
+    """,
+)
+async def oneal_storage_assets_similar(id: int, limit: int = 10) -> Dict[str, Any]:  # noqa: A002
+    return await call_oneal_storage_api("GET", f"/storage/similar/{id}", params={"limit": limit})
+
+
+@oneal_storage_mcp.tool(
+    name="media_preview",
+    description="Return a preview URL for an O'Neal media asset.",
+)
+async def oneal_storage_media_preview(
+    id: int,  # noqa: A002
+    variant: Optional[str] = None,
+    display_for: Optional[str] = None,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    format: Optional[str] = None,
+    quality: Optional[int] = None,
+) -> Dict[str, Any]:
+    options = _clean_params(
+        variant=variant,
+        display_for=display_for,
+        width=width,
+        height=height,
+        format=format,
+        quality=quality,
+    )
+    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
+    return {"url": str(url), "parameters": options}
+
+
+@oneal_storage_mcp.tool(
+    name="media_as_data_url",
+    description="""Load an O'Neal media asset and return it as a Base64 Data URL.
+
+    This is useful for displaying images in environments with Content Security Policy restrictions
+    (like Claude Web Artifacts) that don't allow external image URLs.
+
+    Returns a data URL like: data:image/png;base64,iVBORw0KGgo...
+    """,
+)
+async def oneal_storage_media_as_data_url(
+    id: int,  # noqa: A002
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    format: Optional[str] = None,
+    quality: Optional[int] = None,
+) -> Dict[str, Any]:
+    import base64
+
+    # Build URL with optional parameters
+    options = _clean_params(
+        width=width,
+        height=height,
+        format=format,
+        quality=quality,
+    )
+    url = httpx.URL(f"{STORAGE_API_BASE}/storage/media/{id}").copy_with(params=options)
+
+    # Fetch the image
+    async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        response = await client.get(str(url))
+        response.raise_for_status()
+
+        # Get content type
+        content_type = response.headers.get("content-type", "image/png")
+
+        # Convert to base64
+        image_bytes = response.content
+        base64_data = base64.b64encode(image_bytes).decode('utf-8')
+
+        # Create data URL
+        data_url = f"data:{content_type};base64,{base64_data}"
+
+        return {
+            "data_url": data_url,
+            "content_type": content_type,
+            "size_bytes": len(image_bytes),
+            "size_kb": round(len(image_bytes) / 1024, 2),
+        }
+
+
+@oneal_storage_mcp.tool(
+    name="kg_embed",
+    description="Create or refresh embeddings for an O'Neal storage object.",
+)
+async def oneal_storage_kg_embed(id: int) -> Dict[str, Any]:  # noqa: A002
+    return await call_oneal_storage_api("POST", f"/storage/objects/{id}/embed")
+
+
+@oneal_storage_mcp.tool(
+    name="kg_stats",
+    description="""Get Knowledge Graph statistics and health metrics for O'Neal tenant.
+
+    Returns total embeddings, breakdown by tenant, vector dimensions (3072), and system status.
+    Use this to monitor O'Neal embedding coverage and verify multi-tenancy isolation.
+    """,
+)
+async def oneal_storage_kg_stats() -> Dict[str, Any]:
+    return await call_oneal_storage_api("GET", "/storage/kg/stats")
+
+
+@oneal_storage_mcp.tool(
+    name="assets_refs",
+    description="Resolve O'Neal asset variant references.",
+)
+async def oneal_storage_assets_refs(
+    link_id: Optional[str] = None,
+    collection_id: Optional[str] = None,
+    object_id: Optional[int] = None,
+    role: Optional[str] = None,
+    mine: Optional[bool] = None,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    params = _clean_params(
+        link_id=link_id,
+        collection_id=collection_id,
+        object_id=object_id,
+        role=role,
+        mine=mine,
+        limit=limit,
+    )
+    return await call_oneal_storage_api("GET", "/storage/asset-refs", params=params)
+
+
+@oneal_storage_mcp.tool(
+    name="kg_health",
+    description="Fetch knowledge graph health diagnostics for O'Neal tenant.",
+)
+async def oneal_storage_kg_health() -> Dict[str, Any]:
+    return await call_oneal_storage_api("GET", "/storage/kg/health")
+
+
+@oneal_storage_mcp.tool(
+    name="kg_search",
+    description="""Semantic text search across O'Neal tenant storage objects.
+
+    Natural language search powered by OpenAI embeddings. Understands synonyms, context, and visual concepts.
+    Example: "red motocross gloves for mountain biking" finds relevant O'Neal products even without exact keyword matches.
+    Searches within tenant_oneal_knowledge collection (615 O'Neal product embeddings).
+    """,
+)
+async def oneal_storage_kg_search(
+    query: str,
+    limit: int = 10,
+    collection_like: Optional[str] = None,
+    mine: Optional[bool] = None,
+) -> Dict[str, Any]:
+    params = _clean_params(
+        query=query,
+        limit=limit,
+        collection_like=collection_like,
+        mine=mine,
+    )
+    return await call_oneal_storage_api("GET", "/storage/kg/search", params=params)
+
+
+@oneal_storage_mcp.tool(
+    name="assets_get_embedding_text",
+    description="""Get the embedding text for an O'Neal storage object.
+
+    The embedding text is a 400-1000 character description that combines all AI metadata into searchable text.
+    It is converted to a 3072-dimensional vector for semantic search in the Knowledge Graph.
+
+    Returns:
+    - object_id: Storage object ID
+    - title: Object title
+    - embedding_text: Full embedding description
+    - searchable_fields: Fields included in search index
+    - char_count: Character count
+    """,
+)
+async def oneal_storage_assets_get_embedding_text(id: int) -> Dict[str, Any]:  # noqa: A002
+    return await call_oneal_storage_api("GET", f"/storage/objects/{id}/embedding-text")
+
+
+@oneal_storage_mcp.tool(
+    name="assets_update_embedding_text",
+    description="""Update embedding text and regenerate Knowledge Graph vector for O'Neal object.
+
+    Manually refine the searchable description. The system will:
+    1. Save new text to ai_context_metadata
+    2. Generate new 3072-dim vector (OpenAI text-embedding-3-large)
+    3. Update Chroma Vector DB automatically in tenant_oneal_knowledge collection
+
+    Use this to improve semantic search results by adding domain-specific keywords or refining descriptions.
+    """,
+)
+async def oneal_storage_assets_update_embedding_text(
+    id: int,  # noqa: A002
+    embedding_text: str
+) -> Dict[str, Any]:
+    return await call_oneal_storage_api(
+        "PUT",
+        f"/storage/objects/{id}/embedding-text",
+        json_body={"embedding_text": embedding_text}
+    )
+
+
 # Artrack MCP --------------------------------------------------------------
 artrack_mcp = FastMCP(
     name="artrack-api",
@@ -558,7 +893,7 @@ async def artrack_service_health() -> Dict[str, Any]:
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="arkturian-mcp", version="2.2.0", description="Arkturian MCP Aggregator")
+app = FastAPI(title="arkturian-mcp", version="2.3.0", description="Arkturian MCP Aggregator with per-tenant isolation")
 
 app.add_middleware(
     CORSMiddleware,
@@ -571,13 +906,16 @@ app.add_middleware(
 # Mount MCP transports
 storage_app = storage_mcp.streamable_http_app()
 oneal_app = oneal_mcp.streamable_http_app()
+oneal_storage_app = oneal_storage_mcp.streamable_http_app()
 artrack_app = artrack_mcp.streamable_http_app()
 app.mount(STORAGE_PATH, storage_app)
 app.mount(ONEAL_PATH, oneal_app)
+app.mount(ONEAL_STORAGE_PATH, oneal_storage_app)
 app.mount(ARTRACK_PATH, artrack_app)
 
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
+_oneal_storage_stack = AsyncExitStack()
 _artrack_stack = AsyncExitStack()
 
 
@@ -589,6 +927,9 @@ async def startup() -> None:
     await _oneal_stack.enter_async_context(oneal_mcp.session_manager.run())
     await oneal_app.router.startup()
 
+    await _oneal_storage_stack.enter_async_context(oneal_storage_mcp.session_manager.run())
+    await oneal_storage_app.router.startup()
+
     await _artrack_stack.enter_async_context(artrack_mcp.session_manager.run())
     await artrack_app.router.startup()
 
@@ -597,6 +938,9 @@ async def startup() -> None:
 async def shutdown() -> None:
     await artrack_app.router.shutdown()
     await _artrack_stack.aclose()
+
+    await oneal_storage_app.router.shutdown()
+    await _oneal_storage_stack.aclose()
 
     await oneal_app.router.shutdown()
     await _oneal_stack.aclose()
@@ -610,11 +954,12 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.2.0",
-        "description": "Arkturian MCP Aggregator",
+        "version": "2.3.0",
+        "description": "Arkturian MCP Aggregator with per-tenant isolation",
         "endpoints": {
             "storage": {
                 "path": STORAGE_PATH,
+                "tenant": "arkturian",
                 "tools": [tool.name for tool in storage_mcp._tool_manager.list_tools()],
                 "upstream": STORAGE_API_BASE,
             },
@@ -622,6 +967,12 @@ async def root() -> Dict[str, Any]:
                 "path": ONEAL_PATH,
                 "tools": [tool.name for tool in oneal_mcp._tool_manager.list_tools()],
                 "upstream": ONEAL_API_BASE,
+            },
+            "oneal-storage": {
+                "path": ONEAL_STORAGE_PATH,
+                "tenant": "oneal",
+                "tools": [tool.name for tool in oneal_storage_mcp._tool_manager.list_tools()],
+                "upstream": STORAGE_API_BASE,
             },
             "artrack": {
                 "path": ARTRACK_PATH,
@@ -636,17 +987,24 @@ async def root() -> Dict[str, Any]:
 async def health() -> Dict[str, Any]:
     """Aggregated health check for all upstream services."""
     results: Dict[str, Any] = {"status": "healthy"}
-    try:
-        results["storage"] = await storage_kg_stats()
-    except httpx.HTTPError as exc:
-        results["status"] = "degraded"
-        results["storage_error"] = str(exc)
 
     try:
-        results["oneal"] = await oneal_service_ping()
+        results["storage_arkturian"] = await storage_kg_stats()
     except httpx.HTTPError as exc:
         results["status"] = "degraded"
-        results["oneal_error"] = str(exc)
+        results["storage_arkturian_error"] = str(exc)
+
+    try:
+        results["oneal_products"] = await oneal_service_ping()
+    except httpx.HTTPError as exc:
+        results["status"] = "degraded"
+        results["oneal_products_error"] = str(exc)
+
+    try:
+        results["storage_oneal"] = await oneal_storage_kg_stats()
+    except httpx.HTTPError as exc:
+        results["status"] = "degraded"
+        results["storage_oneal_error"] = str(exc)
 
     try:
         results["artrack"] = await artrack_service_health()
@@ -667,13 +1025,20 @@ async def well_known(request: Request) -> JSONResponse:
             "mcpServers": {
                 "storage": {
                     "name": "arkturian-storage",
-                    "version": "2.1.0",
+                    "version": "2.3.0",
+                    "tenant": "arkturian",
                     "url": f"{base_url}{STORAGE_PATH}/",
                 },
                 "oneal": {
                     "name": "oneal-products",
                     "version": "1.0.0",
                     "url": f"{base_url}{ONEAL_PATH}/",
+                },
+                "oneal-storage": {
+                    "name": "oneal-storage",
+                    "version": "1.0.0",
+                    "tenant": "oneal",
+                    "url": f"{base_url}{ONEAL_STORAGE_PATH}/",
                 },
                 "artrack": {
                     "name": "artrack-api",
