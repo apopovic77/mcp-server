@@ -1113,18 +1113,33 @@ async def codepilot_ask_human(
     name="create_change_request",
     description="""Create a change request in CodePilot for the specified project.
 
-    Required: project_id (int), description (str).
+    Required: description (str).
+    Choose either:
+      - project_id (int) OR
+      - project_name (string; matches name or github_repo, case-insensitive)
+
     Optional: priority (low|medium|high), defaults to medium.
     """,
 )
 async def codepilot_create_change_request(
-    project_id: int,
     description: str,
+    project_id: Optional[int] = None,
+    project_name: Optional[str] = None,
     priority: str = "medium",
 ) -> Dict[str, Any]:
     """Create a CR via CodePilot API."""
     if not CODEPILOT_API_TOKEN:
         return {"created": False, "error": "CODEPILOT_API_TOKEN not configured"}
+
+    if not project_id and not project_name:
+        return {"created": False, "error": "project_id or project_name is required"}
+
+    resolved_project_id = project_id
+    if not resolved_project_id and project_name:
+        match = await _find_project_by_name(project_name)
+        if not match:
+            return {"created": False, "error": f"project not found for name '{project_name}'"}
+        resolved_project_id = match["id"]
 
     priority_value = priority.lower().strip() if priority else "medium"
 
@@ -1133,7 +1148,7 @@ async def codepilot_create_change_request(
             "POST",
             "/api/v1/change-requests/",
             json_body={
-                "project_id": project_id,
+                "project_id": resolved_project_id,
                 "description": description,
                 "priority": priority_value,
             },
@@ -1159,6 +1174,33 @@ async def codepilot_list_projects() -> Dict[str, Any]:
     except Exception as e:
         logger.error("Failed to list projects: %s", e)
         return {"error": str(e), "projects": []}
+
+
+async def _find_project_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """Find project by name or github_repo (case-insensitive, partial match allowed)."""
+    if not CODEPILOT_API_TOKEN:
+        return None
+
+    try:
+        result = await call_codepilot_api("GET", "/api/v1/projects/", params={"limit": 200})
+        projects = result.get("items", [])
+    except Exception as e:
+        logger.error("Failed to fetch projects for name lookup: %s", e)
+        return None
+
+    needle = name.lower().strip()
+
+    # Exact match first
+    for proj in projects:
+        if proj.get("name", "").lower() == needle or proj.get("github_repo", "").lower() == needle:
+            return proj
+
+    # Partial match
+    for proj in projects:
+        if needle in proj.get("name", "").lower() or needle in proj.get("github_repo", "").lower():
+            return proj
+
+    return None
 
 
 # --------------------------------------------------------------------------- #
