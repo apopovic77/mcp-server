@@ -46,6 +46,10 @@ ARTRACK_API_KEY = os.getenv("ARTRACK_API_KEY", "")
 TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "https://telegram-api.arkturian.com")
 TELEGRAM_API_KEY = os.getenv("TELEGRAM_API_KEY", "")
 
+# CodePilot API (for creating change requests)
+CODEPILOT_API_BASE = os.getenv("CODEPILOT_API_BASE", "http://localhost:8201")
+CODEPILOT_API_TOKEN = os.getenv("CODEPILOT_API_TOKEN", "")
+
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
 HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "30.0"))
@@ -189,6 +193,27 @@ async def call_telegram_api(
         except httpx.HTTPError as exc:
             logger.error("Telegram API request to %s failed: %s", url, exc)
             raise
+
+
+async def call_codepilot_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call CodePilot API using Bearer token auth."""
+    if not CODEPILOT_API_TOKEN:
+        raise RuntimeError("CODEPILOT_API_TOKEN not configured")
+
+    headers = {"Authorization": f"Bearer {CODEPILOT_API_TOKEN}"}
+    return await _fetch_json(
+        method,
+        f"{CODEPILOT_API_BASE}{endpoint}",
+        headers=headers,
+        params=params,
+        json_body=json_body,
+    )
 
 
 def _clean_params(**kwargs: Any) -> Dict[str, Any]:
@@ -1082,6 +1107,41 @@ async def codepilot_ask_human(
     except Exception as e:
         logger.error("Failed to ask human: %s", e)
         return {"error": str(e), "response": None}
+
+
+@codepilot_mcp.tool(
+    name="create_change_request",
+    description="""Create a change request in CodePilot for the specified project.
+
+    Required: project_id (int), description (str).
+    Optional: priority (low|medium|high), defaults to medium.
+    """,
+)
+async def codepilot_create_change_request(
+    project_id: int,
+    description: str,
+    priority: str = "medium",
+) -> Dict[str, Any]:
+    """Create a CR via CodePilot API."""
+    if not CODEPILOT_API_TOKEN:
+        return {"created": False, "error": "CODEPILOT_API_TOKEN not configured"}
+
+    priority_value = priority.lower().strip() if priority else "medium"
+
+    try:
+        result = await call_codepilot_api(
+            "POST",
+            "/api/v1/change-requests/",
+            json_body={
+                "project_id": project_id,
+                "description": description,
+                "priority": priority_value,
+            },
+        )
+        return {"created": True, "cr": result}
+    except Exception as e:
+        logger.error("Failed to create change request: %s", e)
+        return {"created": False, "error": str(e)}
 
 
 # --------------------------------------------------------------------------- #
