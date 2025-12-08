@@ -1144,6 +1144,23 @@ async def codepilot_create_change_request(
         return {"created": False, "error": str(e)}
 
 
+@codepilot_mcp.tool(
+    name="list_projects",
+    description="List accessible CodePilot projects (id, name, github_repo). Useful to pick a valid project_id.",
+)
+async def codepilot_list_projects() -> Dict[str, Any]:
+    """Return projects visible to the service user."""
+    if not CODEPILOT_API_TOKEN:
+        return {"error": "CODEPILOT_API_TOKEN not configured", "projects": []}
+
+    try:
+        result = await call_codepilot_api("GET", "/api/v1/projects/")
+        return {"projects": result.get("items", [])}
+    except Exception as e:
+        logger.error("Failed to list projects: %s", e)
+        return {"error": str(e), "projects": []}
+
+
 # --------------------------------------------------------------------------- #
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
