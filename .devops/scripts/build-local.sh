@@ -5,7 +5,8 @@ set -euo pipefail
 # Resolve repository root relative to this script so it works everywhere.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
-BUILD_COMMAND="npm run build"
+# Minimal sanity check for Python service: syntax check server.py
+BUILD_COMMAND="python -m py_compile server.py"
 
 usage() {
   cat <<'USAGE'
@@ -36,4 +37,4 @@ fi
 # shellcheck disable=SC2086
 $BUILD_COMMAND
 
-echo "✅ Local build finished. Output: ${REPO_ROOT}/dist"
+echo "✅ Local build finished (syntax check)."
