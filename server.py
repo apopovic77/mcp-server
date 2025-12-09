@@ -50,6 +50,10 @@ TELEGRAM_API_KEY = os.getenv("TELEGRAM_API_KEY", "")
 CODEPILOT_API_BASE = os.getenv("CODEPILOT_API_BASE", "http://localhost:8201")
 CODEPILOT_API_TOKEN = os.getenv("CODEPILOT_API_TOKEN", "")
 
+# AI API
+AI_API_BASE = os.getenv("AI_API_BASE", "https://api-ai.arkturian.com")
+AI_API_KEY = os.getenv("AI_API_KEY", "")
+
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
 HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "30.0"))
@@ -67,6 +71,7 @@ ONEAL_PATH = "/oneal"
 ONEAL_STORAGE_PATH = "/oneal-storage"
 ARTRACK_PATH = "/artrack"
 CODEPILOT_PATH = "/codepilot"
+AI_PATH = "/ai"
 
 # --------------------------------------------------------------------------- #
 # HTTP helpers
@@ -193,6 +198,22 @@ async def call_telegram_api(
         except httpx.HTTPError as exc:
             logger.error("Telegram API request to %s failed: %s", url, exc)
             raise
+
+
+async def call_ai_api(
+    method: str,
+    endpoint: str,
+    *,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call AI API (text/image/audio) with API key if provided."""
+    headers = {"X-API-Key": AI_API_KEY} if AI_API_KEY else {}
+    return await _fetch_json(
+        method,
+        f"{AI_API_BASE}{endpoint}",
+        headers=headers,
+        json_body=json_body,
+    )
 
 
 async def call_codepilot_api(
@@ -1228,6 +1249,90 @@ app.mount(ONEAL_PATH, oneal_app)
 app.mount(ONEAL_STORAGE_PATH, oneal_storage_app)
 app.mount(ARTRACK_PATH, artrack_app)
 app.mount(CODEPILOT_PATH, codepilot_app)
+ai_mcp = FastMCP(
+    name="ai-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@ai_mcp.tool(
+    name="claude_text",
+    description="Call AI API /ai/claude for text or vision. Minimal params: prompt (string). Optional: system, max_tokens, temperature, model.",
+)
+async def ai_claude_text(
+    prompt: str,
+    system: Optional[str] = None,
+    max_tokens: Optional[int] = 1000,
+    temperature: Optional[float] = 0.7,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "prompt": prompt,
+        "system": system,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if model:
+        body["model"] = model
+    return await call_ai_api("POST", "/ai/claude", json_body=body)
+
+
+@ai_mcp.tool(
+    name="chatgpt_text",
+    description="Call AI API /ai/chatgpt. Params: prompt, system?, max_tokens?, temperature?, model?",
+)
+async def ai_chatgpt_text(
+    prompt: str,
+    system: Optional[str] = None,
+    max_tokens: Optional[int] = 1000,
+    temperature: Optional[float] = 0.7,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "prompt": prompt,
+        "system": system,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if model:
+        body["model"] = model
+    return await call_ai_api("POST", "/ai/chatgpt", json_body=body)
+
+
+@ai_mcp.tool(
+    name="gemini_text",
+    description="Call AI API /ai/gemini. Params: prompt, system?, max_tokens?, temperature?, model?",
+)
+async def ai_gemini_text(
+    prompt: str,
+    system: Optional[str] = None,
+    max_tokens: Optional[int] = 1000,
+    temperature: Optional[float] = 0.7,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "prompt": prompt,
+        "system": system,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if model:
+        body["model"] = model
+    return await call_ai_api("POST", "/ai/gemini", json_body=body)
+
+
+@ai_mcp.tool(
+    name="transcribe_audio",
+    description="Proxy to AI API /ai/transcribe (expects audio file URL). Provide `file_url` pointing to accessible audio.",
+)
+async def ai_transcribe_audio(file_url: str) -> Dict[str, Any]:
+    return await call_ai_api("POST", "/ai/transcribe", json_body={"file_url": file_url})
+
+
+ai_app = ai_mcp.streamable_http_app()
+app.mount(AI_PATH, ai_app)
 
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
