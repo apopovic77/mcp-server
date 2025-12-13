@@ -1689,6 +1689,7 @@ _oneal_storage_stack = AsyncExitStack()
 _artrack_stack = AsyncExitStack()
 _codepilot_stack = AsyncExitStack()
 _content_stack = AsyncExitStack()
+_ai_stack = AsyncExitStack()
 
 
 @app.on_event("startup")
@@ -1711,9 +1712,15 @@ async def startup() -> None:
     await _content_stack.enter_async_context(content_mcp.session_manager.run())
     await content_app.router.startup()
 
+    await _ai_stack.enter_async_context(ai_mcp.session_manager.run())
+    await ai_app.router.startup()
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await ai_app.router.shutdown()
+    await _ai_stack.aclose()
+
     await content_app.router.shutdown()
     await _content_stack.aclose()
 
