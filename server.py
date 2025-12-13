@@ -1228,7 +1228,7 @@ async def _find_project_by_name(name: str) -> Optional[Dict[str, Any]]:
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="arkturian-mcp", version="2.3.0", description="Arkturian MCP Aggregator with human-in-the-loop")
+app = FastAPI(title="arkturian-mcp", version="2.4.0", description="Arkturian MCP Aggregator with AI generation")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1331,6 +1331,45 @@ async def ai_transcribe_audio(file_url: str) -> Dict[str, Any]:
     return await call_ai_api("POST", "/ai/transcribe", json_body={"file_url": file_url})
 
 
+@ai_mcp.tool(
+    name="genimage",
+    description="""Generate an image from a text prompt using AI models.
+
+    Returns a generated image stored in the Storage API with:
+    - id: Storage object ID
+    - image_url: URL to the generated image
+    - storage_object_id: Same as id
+    - model: Model name used
+    - actual_model: Actual model ID
+
+    Available models:
+    - nano-banana (default): Fast image generation (gemini-2.5-flash-image)
+    - nano-banana-pro: Best quality (gemini-3-pro-image-preview)
+    - imagen-4: Google Imagen 4.0
+
+    Example:
+    genimage(prompt="a futuristic city at sunset", model="nano-banana")
+    """,
+)
+async def ai_genimage(
+    prompt: str,
+    model: Optional[str] = "nano-banana",
+    width: Optional[int] = 1024,
+    height: Optional[int] = 1024,
+    negative_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Generate image from text prompt."""
+    body = {
+        "prompt": prompt,
+        "model": model,
+        "width": width,
+        "height": height,
+    }
+    if negative_prompt:
+        body["negative_prompt"] = negative_prompt
+    return await call_ai_api("POST", "/ai/genimage", json_body=body)
+
+
 ai_app = ai_mcp.streamable_http_app()
 app.mount(AI_PATH, ai_app)
 
@@ -1382,8 +1421,8 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.3.0",
-        "description": "Arkturian MCP Aggregator with per-tenant isolation and human-in-the-loop",
+        "version": "2.4.0",
+        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, and AI generation",
         "endpoints": {
             "storage": {
                 "path": STORAGE_PATH,
@@ -1412,6 +1451,12 @@ async def root() -> Dict[str, Any]:
                 "tools": [tool.name for tool in codepilot_mcp._tool_manager.list_tools()],
                 "upstream": TELEGRAM_API_BASE,
                 "description": "Human-in-the-loop tools for CodePilot",
+            },
+            "ai": {
+                "path": AI_PATH,
+                "tools": [tool.name for tool in ai_mcp._tool_manager.list_tools()],
+                "upstream": AI_API_BASE,
+                "description": "AI text, vision, and image generation tools",
             },
         },
     }
@@ -1459,7 +1504,7 @@ async def well_known(request: Request) -> JSONResponse:
             "mcpServers": {
                 "storage": {
                     "name": "arkturian-storage",
-                    "version": "2.3.0",
+                    "version": "2.4.0",
                     "tenant": "arkturian",
                     "url": f"{base_url}{STORAGE_PATH}/",
                 },
@@ -1484,6 +1529,12 @@ async def well_known(request: Request) -> JSONResponse:
                     "version": "1.0.0",
                     "description": "Human-in-the-loop tools for CodePilot",
                     "url": f"{base_url}{CODEPILOT_PATH}/",
+                },
+                "ai": {
+                    "name": "ai-api",
+                    "version": "1.0.0",
+                    "description": "AI text, vision, and image generation tools",
+                    "url": f"{base_url}{AI_PATH}/",
                 },
             }
         }
