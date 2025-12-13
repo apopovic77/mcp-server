@@ -8,6 +8,8 @@ Exposes MCP endpoint groups over HTTP/SSE with per-tenant isolation:
   • /oneal-storage  – O'Neal tenant Storage & Knowledge Graph tools (615 products)
   • /artrack        – Artrack GPS tracking & route management API
   • /codepilot      – Human-in-the-loop tools (Telegram notifications & questions)
+  • /ai             – AI text, vision, and image generation tools
+  • /content        – Content management API for posts, media, annotations, and blocks
 """
 
 from __future__ import annotations
@@ -42,6 +44,9 @@ ONEAL_STORAGE_API_KEY = os.getenv("ONEAL_STORAGE_API_KEY", "")
 ARTRACK_API_BASE = os.getenv("ARTRACK_API_BASE", "https://api-artrack.arkturian.com")
 ARTRACK_API_KEY = os.getenv("ARTRACK_API_KEY", "")
 
+# Content API
+CONTENT_API_BASE = os.getenv("CONTENT_API_BASE", "https://content-api.arkturian.com")
+
 # Telegram API for human-in-the-loop
 TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "https://telegram-api.arkturian.com")
 TELEGRAM_API_KEY = os.getenv("TELEGRAM_API_KEY", "")
@@ -72,6 +77,7 @@ ONEAL_STORAGE_PATH = "/oneal-storage"
 ARTRACK_PATH = "/artrack"
 CODEPILOT_PATH = "/codepilot"
 AI_PATH = "/ai"
+CONTENT_PATH = "/content"
 
 # --------------------------------------------------------------------------- #
 # HTTP helpers
@@ -232,6 +238,23 @@ async def call_codepilot_api(
         method,
         f"{CODEPILOT_API_BASE}{endpoint}",
         headers=headers,
+        params=params,
+        json_body=json_body,
+    )
+
+
+async def call_content_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call Content API for posts, media, annotations, and blocks."""
+    return await _fetch_json(
+        method,
+        f"{CONTENT_API_BASE}{endpoint}",
+        headers={},  # No auth required for public endpoints
         params=params,
         json_body=json_body,
     )
@@ -1224,11 +1247,296 @@ async def _find_project_by_name(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+# Content API MCP --------------------------------------------------------------
+content_mcp = FastMCP(
+    name="content-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@content_mcp.tool(
+    name="posts_list",
+    description="""List posts with optional filters.
+
+    Returns paginated list of posts with:
+    - id, title, slug, content_type, status
+    - author_id, author_name
+    - created_at, updated_at
+    - media count, annotations count, blocks count
+
+    Filters: status (draft|published|archived), author_id, content_type
+    """,
+)
+async def content_posts_list(
+    status: Optional[str] = None,
+    author_id: Optional[str] = None,
+    content_type: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    params = _clean_params(
+        status=status,
+        author_id=author_id,
+        content_type=content_type,
+        limit=limit,
+        offset=offset,
+    )
+    return await call_content_api("GET", "/api/v1/posts/", params=params)
+
+
+@content_mcp.tool(
+    name="posts_get",
+    description="""Get a single post by ID with full details.
+
+    Returns complete post data including:
+    - All post fields (id, title, slug, content, etc.)
+    - media: Array of attached media items with URLs
+    - annotations: Array of content annotations
+    - blocks: Array of structured content blocks
+    """,
+)
+async def content_posts_get(post_id: int) -> Dict[str, Any]:
+    return await call_content_api("GET", f"/api/v1/posts/{post_id}")
+
+
+@content_mcp.tool(
+    name="posts_create",
+    description="""Create a new post.
+
+    Required: title (str)
+    Optional: content, content_type (md|html|json), status (draft|published|archived),
+              author_id, author_name, metadata_json
+    """,
+)
+async def content_posts_create(
+    title: str,
+    content: Optional[str] = None,
+    content_type: str = "md",
+    status: str = "draft",
+    author_id: Optional[str] = None,
+    author_name: Optional[str] = None,
+    metadata_json: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    body = {
+        "title": title,
+        "content": content,
+        "content_type": content_type,
+        "status": status,
+    }
+    if author_id:
+        body["author_id"] = author_id
+    if author_name:
+        body["author_name"] = author_name
+    if metadata_json:
+        body["metadata_json"] = metadata_json
+    return await call_content_api("POST", "/api/v1/posts/", json_body=body)
+
+
+@content_mcp.tool(
+    name="posts_update",
+    description="""Update an existing post.
+
+    All fields are optional. Only provided fields will be updated.
+    """,
+)
+async def content_posts_update(
+    post_id: int,
+    title: Optional[str] = None,
+    content: Optional[str] = None,
+    content_type: Optional[str] = None,
+    status: Optional[str] = None,
+    author_id: Optional[str] = None,
+    author_name: Optional[str] = None,
+    metadata_json: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    body = _clean_params(
+        title=title,
+        content=content,
+        content_type=content_type,
+        status=status,
+        author_id=author_id,
+        author_name=author_name,
+        metadata_json=metadata_json,
+    )
+    return await call_content_api("PUT", f"/api/v1/posts/{post_id}", json_body=body)
+
+
+@content_mcp.tool(
+    name="posts_delete",
+    description="Delete a post by ID. Returns success status.",
+)
+async def content_posts_delete(post_id: int) -> Dict[str, Any]:
+    return await call_content_api("DELETE", f"/api/v1/posts/{post_id}")
+
+
+@content_mcp.tool(
+    name="media_list",
+    description="""List media attachments for a post.
+
+    Returns all media items attached to the specified post with:
+    - id, storage_id, position, caption, role
+    - media_url: Direct URL to the media file
+    - created_at
+    """,
+)
+async def content_media_list(post_id: int) -> Dict[str, Any]:
+    return await call_content_api("GET", f"/api/v1/posts/{post_id}/media/")
+
+
+@content_mcp.tool(
+    name="media_add",
+    description="""Add media attachment to a post.
+
+    Required: storage_id (int) - ID from Storage API
+    Optional: position (int), caption (str), role (str, e.g. 'hero', 'gallery')
+    """,
+)
+async def content_media_add(
+    post_id: int,
+    storage_id: int,
+    position: int = 0,
+    caption: Optional[str] = None,
+    role: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "storage_id": storage_id,
+        "position": position,
+    }
+    if caption:
+        body["caption"] = caption
+    if role:
+        body["role"] = role
+    return await call_content_api("POST", f"/api/v1/posts/{post_id}/media/", json_body=body)
+
+
+@content_mcp.tool(
+    name="media_delete",
+    description="Remove media attachment from a post.",
+)
+async def content_media_delete(post_id: int, media_id: int) -> Dict[str, Any]:
+    return await call_content_api("DELETE", f"/api/v1/posts/{post_id}/media/{media_id}")
+
+
+@content_mcp.tool(
+    name="annotations_list",
+    description="""List annotations for a post.
+
+    Annotations are metadata markers on content (highlights, comments, tags).
+    Returns: id, annotation_type, target_selector, body_json, created_at
+    """,
+)
+async def content_annotations_list(post_id: int) -> Dict[str, Any]:
+    return await call_content_api("GET", f"/api/v1/posts/{post_id}/annotations/")
+
+
+@content_mcp.tool(
+    name="annotations_create",
+    description="""Create an annotation on a post.
+
+    Required: annotation_type (str), target_selector (dict)
+    Optional: body_json (dict) - annotation content/metadata
+    """,
+)
+async def content_annotations_create(
+    post_id: int,
+    annotation_type: str,
+    target_selector: Dict[str, Any],
+    body_json: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    body = {
+        "annotation_type": annotation_type,
+        "target_selector": target_selector,
+    }
+    if body_json:
+        body["body_json"] = body_json
+    return await call_content_api("POST", f"/api/v1/posts/{post_id}/annotations/", json_body=body)
+
+
+@content_mcp.tool(
+    name="annotations_delete",
+    description="Delete an annotation from a post.",
+)
+async def content_annotations_delete(post_id: int, annotation_id: int) -> Dict[str, Any]:
+    return await call_content_api("DELETE", f"/api/v1/posts/{post_id}/annotations/{annotation_id}")
+
+
+@content_mcp.tool(
+    name="blocks_list",
+    description="""List content blocks for a post.
+
+    Blocks are structured content units (text, image, video, embed, etc.).
+    Returns: id, block_type, position, data_json, created_at
+    """,
+)
+async def content_blocks_list(post_id: int) -> Dict[str, Any]:
+    return await call_content_api("GET", f"/api/v1/posts/{post_id}/blocks/")
+
+
+@content_mcp.tool(
+    name="blocks_create",
+    description="""Create a content block in a post.
+
+    Required: block_type (str, e.g. 'text', 'image', 'video', 'embed')
+    Optional: position (int), data_json (dict) - block-specific data
+    """,
+)
+async def content_blocks_create(
+    post_id: int,
+    block_type: str,
+    position: int = 0,
+    data_json: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    body = {
+        "block_type": block_type,
+        "position": position,
+    }
+    if data_json:
+        body["data_json"] = data_json
+    return await call_content_api("POST", f"/api/v1/posts/{post_id}/blocks/", json_body=body)
+
+
+@content_mcp.tool(
+    name="blocks_update",
+    description="Update a content block. All fields optional.",
+)
+async def content_blocks_update(
+    post_id: int,
+    block_id: int,
+    block_type: Optional[str] = None,
+    position: Optional[int] = None,
+    data_json: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    body = _clean_params(
+        block_type=block_type,
+        position=position,
+        data_json=data_json,
+    )
+    return await call_content_api("PUT", f"/api/v1/posts/{post_id}/blocks/{block_id}", json_body=body)
+
+
+@content_mcp.tool(
+    name="blocks_delete",
+    description="Delete a content block from a post.",
+)
+async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
+    return await call_content_api("DELETE", f"/api/v1/posts/{post_id}/blocks/{block_id}")
+
+
+@content_mcp.tool(
+    name="service_health",
+    description="Health check for the Content API.",
+)
+async def content_service_health() -> Dict[str, Any]:
+    return await call_content_api("GET", "/health")
+
+
 # --------------------------------------------------------------------------- #
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="arkturian-mcp", version="2.4.0", description="Arkturian MCP Aggregator with AI generation")
+app = FastAPI(title="arkturian-mcp", version="2.5.0", description="Arkturian MCP Aggregator with AI generation and Content API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1244,11 +1552,13 @@ oneal_app = oneal_mcp.streamable_http_app()
 oneal_storage_app = oneal_storage_mcp.streamable_http_app()
 artrack_app = artrack_mcp.streamable_http_app()
 codepilot_app = codepilot_mcp.streamable_http_app()
+content_app = content_mcp.streamable_http_app()
 app.mount(STORAGE_PATH, storage_app)
 app.mount(ONEAL_PATH, oneal_app)
 app.mount(ONEAL_STORAGE_PATH, oneal_storage_app)
 app.mount(ARTRACK_PATH, artrack_app)
 app.mount(CODEPILOT_PATH, codepilot_app)
+app.mount(CONTENT_PATH, content_app)
 ai_mcp = FastMCP(
     name="ai-api",
     streamable_http_path="/",
@@ -1378,6 +1688,7 @@ _oneal_stack = AsyncExitStack()
 _oneal_storage_stack = AsyncExitStack()
 _artrack_stack = AsyncExitStack()
 _codepilot_stack = AsyncExitStack()
+_content_stack = AsyncExitStack()
 
 
 @app.on_event("startup")
@@ -1397,9 +1708,15 @@ async def startup() -> None:
     await _codepilot_stack.enter_async_context(codepilot_mcp.session_manager.run())
     await codepilot_app.router.startup()
 
+    await _content_stack.enter_async_context(content_mcp.session_manager.run())
+    await content_app.router.startup()
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await content_app.router.shutdown()
+    await _content_stack.aclose()
+
     await codepilot_app.router.shutdown()
     await _codepilot_stack.aclose()
 
@@ -1421,8 +1738,8 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.4.0",
-        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, and AI generation",
+        "version": "2.5.0",
+        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, and Content API",
         "endpoints": {
             "storage": {
                 "path": STORAGE_PATH,
@@ -1458,6 +1775,12 @@ async def root() -> Dict[str, Any]:
                 "upstream": AI_API_BASE,
                 "description": "AI text, vision, and image generation tools",
             },
+            "content": {
+                "path": CONTENT_PATH,
+                "tools": [tool.name for tool in content_mcp._tool_manager.list_tools()],
+                "upstream": CONTENT_API_BASE,
+                "description": "Content management API for posts, media, annotations, and blocks",
+            },
         },
     }
 
@@ -1491,6 +1814,12 @@ async def health() -> Dict[str, Any]:
         results["status"] = "degraded"
         results["artrack_error"] = str(exc)
 
+    try:
+        results["content"] = await content_service_health()
+    except httpx.HTTPError as exc:
+        results["status"] = "degraded"
+        results["content_error"] = str(exc)
+
     if results["status"] != "healthy":
         raise HTTPException(status_code=207, detail=results)
     return results
@@ -1504,7 +1833,7 @@ async def well_known(request: Request) -> JSONResponse:
             "mcpServers": {
                 "storage": {
                     "name": "arkturian-storage",
-                    "version": "2.4.0",
+                    "version": "2.5.0",
                     "tenant": "arkturian",
                     "url": f"{base_url}{STORAGE_PATH}/",
                 },
@@ -1535,6 +1864,12 @@ async def well_known(request: Request) -> JSONResponse:
                     "version": "1.0.0",
                     "description": "AI text, vision, and image generation tools",
                     "url": f"{base_url}{AI_PATH}/",
+                },
+                "content": {
+                    "name": "content-api",
+                    "version": "1.0.0",
+                    "description": "Content management for posts, media, annotations, and blocks",
+                    "url": f"{base_url}{CONTENT_PATH}/",
                 },
             }
         }
