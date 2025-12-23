@@ -1247,6 +1247,76 @@ async def _find_project_by_name(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+@codepilot_mcp.tool(
+    name="ask_supervisor",
+    description="""Ask the supervisor agent a question and wait for their response.
+
+    Use this when you (a worker agent) need guidance or a decision from the
+    supervising agent. The supervisor will receive your question and can
+    provide an answer.
+
+    This enables hierarchical agent communication without human intervention.
+
+    Args:
+        session_id: Unique session ID (provided by supervisor when spawning you)
+        question: Your question for the supervisor
+        context: Optional additional context to help supervisor understand
+
+    Returns:
+        The supervisor's answer
+
+    Example:
+        ask_supervisor(
+            session_id="abc123",
+            question="Which design style should I use for this tech company?",
+            context="Available: Aurora Dark, Crystalline Glass, Organic Flow"
+        )
+    """,
+)
+async def codepilot_ask_supervisor(
+    session_id: str,
+    question: str,
+    context: Optional[str] = None,
+    timeout_seconds: int = 300,
+) -> Dict[str, Any]:
+    """Ask supervisor agent a question and wait for response."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds + 30) as client:
+            response = await client.post(
+                f"{CODEPILOT_API_BASE}/api/v1/supervisor/ask",
+                headers={"Authorization": f"Bearer {CODEPILOT_API_TOKEN}"} if CODEPILOT_API_TOKEN else {},
+                json={
+                    "session_id": session_id,
+                    "question": question,
+                    "context": context,
+                },
+                params={"timeout": timeout_seconds},
+            )
+            response.raise_for_status()
+            result = response.json()
+
+        return {
+            "answer": result.get("answer"),
+            "session_id": result.get("session_id"),
+            "success": True,
+        }
+
+    except httpx.TimeoutException:
+        logger.warning("Timeout waiting for supervisor answer")
+        return {
+            "error": "Timeout waiting for supervisor answer",
+            "answer": None,
+            "success": False,
+        }
+    except Exception as e:
+        logger.error("Failed to ask supervisor: %s", e)
+        return {
+            "error": str(e),
+            "answer": None,
+            "success": False,
+        }
+
+
 # Content API MCP --------------------------------------------------------------
 content_mcp = FastMCP(
     name="content-api",
