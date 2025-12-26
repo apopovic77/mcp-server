@@ -78,6 +78,10 @@ ARTRACK_PATH = "/artrack"
 CODEPILOT_PATH = "/codepilot"
 AI_PATH = "/ai"
 CONTENT_PATH = "/content"
+TAROT_PATH = "/tarot"
+
+# Tools API (for Tarot)
+TOOLS_API_BASE = os.getenv("TOOLS_API_BASE", "https://tools-api.arkturian.com")
 
 # --------------------------------------------------------------------------- #
 # HTTP helpers
@@ -218,6 +222,23 @@ async def call_ai_api(
         method,
         f"{AI_API_BASE}{endpoint}",
         headers=headers,
+        json_body=json_body,
+    )
+
+
+async def call_tools_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call Tools API (no auth required for public endpoints)."""
+    return await _fetch_json(
+        method,
+        f"{TOOLS_API_BASE}{endpoint}",
+        headers={},
+        params=params,
         json_body=json_body,
     )
 
@@ -1606,7 +1627,7 @@ async def content_service_health() -> Dict[str, Any]:
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="arkturian-mcp", version="2.5.0", description="Arkturian MCP Aggregator with AI generation and Content API")
+app = FastAPI(title="arkturian-mcp", version="2.6.0", description="Arkturian MCP Aggregator with AI generation, Content API, and Tarot")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1753,6 +1774,73 @@ async def ai_genimage(
 ai_app = ai_mcp.streamable_http_app()
 app.mount(AI_PATH, ai_app)
 
+# --------------------------------------------------------------------------- #
+# Tarot MCP - Tarot card reading tools
+# --------------------------------------------------------------------------- #
+
+tarot_mcp = FastMCP(
+    name="tarot-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@tarot_mcp.tool(
+    name="tarot_draw",
+    description="""Draw Tarot cards from a full 78-card deck.
+
+    The deck contains:
+    - 22 Major Arcana cards (The Fool through The World)
+    - 56 Minor Arcana cards (Wands, Cups, Swords, Pentacles)
+
+    Returns drawn cards with their meanings, keywords, and positions.
+
+    Parameters:
+    - num_cards: Number of cards to draw (1-78). Ignored if spread_type is set.
+    - spread_type: Optional spread type (single, three_card, celtic_cross, love, decision)
+    - allow_reversed: Whether cards can appear reversed (default true)
+
+    Example:
+    tarot_draw(num_cards=3, spread_type="three_card")
+    """,
+)
+async def tarot_draw(
+    num_cards: int = 1,
+    spread_type: Optional[str] = None,
+    allow_reversed: bool = True,
+) -> Dict[str, Any]:
+    """Draw Tarot cards."""
+    body = {
+        "num_cards": num_cards,
+        "allow_reversed": allow_reversed,
+    }
+    if spread_type:
+        body["spread_type"] = spread_type
+    return await call_tools_api("POST", "/api/v1/tarot/draw", json_body=body)
+
+
+@tarot_mcp.tool(
+    name="tarot_spreads",
+    description="Get all available Tarot spread types with their descriptions and positions.",
+)
+async def tarot_spreads() -> Dict[str, Any]:
+    """Get available spread types."""
+    return await call_tools_api("GET", "/api/v1/tarot/spreads")
+
+
+@tarot_mcp.tool(
+    name="tarot_deck_info",
+    description="Get information about the Tarot deck (total cards, suits, spread types).",
+)
+async def tarot_deck_info() -> Dict[str, Any]:
+    """Get deck information."""
+    return await call_tools_api("GET", "/api/v1/tarot/deck")
+
+
+tarot_app = tarot_mcp.streamable_http_app()
+app.mount(TAROT_PATH, tarot_app)
+
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
 _oneal_storage_stack = AsyncExitStack()
@@ -1760,6 +1848,7 @@ _artrack_stack = AsyncExitStack()
 _codepilot_stack = AsyncExitStack()
 _content_stack = AsyncExitStack()
 _ai_stack = AsyncExitStack()
+_tarot_stack = AsyncExitStack()
 
 
 @app.on_event("startup")
@@ -1785,9 +1874,15 @@ async def startup() -> None:
     await _ai_stack.enter_async_context(ai_mcp.session_manager.run())
     await ai_app.router.startup()
 
+    await _tarot_stack.enter_async_context(tarot_mcp.session_manager.run())
+    await tarot_app.router.startup()
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await tarot_app.router.shutdown()
+    await _tarot_stack.aclose()
+
     await ai_app.router.shutdown()
     await _ai_stack.aclose()
 
@@ -1815,8 +1910,8 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.5.0",
-        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, and Content API",
+        "version": "2.6.0",
+        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, Content API, and Tarot",
         "endpoints": {
             "storage": {
                 "path": STORAGE_PATH,
@@ -1857,6 +1952,12 @@ async def root() -> Dict[str, Any]:
                 "tools": [tool.name for tool in content_mcp._tool_manager.list_tools()],
                 "upstream": CONTENT_API_BASE,
                 "description": "Content management API for posts, media, annotations, and blocks",
+            },
+            "tarot": {
+                "path": TAROT_PATH,
+                "tools": [tool.name for tool in tarot_mcp._tool_manager.list_tools()],
+                "upstream": TOOLS_API_BASE,
+                "description": "Tarot card reading with full 78-card deck",
             },
         },
     }
@@ -1910,7 +2011,7 @@ async def well_known(request: Request) -> JSONResponse:
             "mcpServers": {
                 "storage": {
                     "name": "arkturian-storage",
-                    "version": "2.5.0",
+                    "version": "2.6.0",
                     "tenant": "arkturian",
                     "url": f"{base_url}{STORAGE_PATH}/",
                 },
@@ -1947,6 +2048,12 @@ async def well_known(request: Request) -> JSONResponse:
                     "version": "1.0.0",
                     "description": "Content management for posts, media, annotations, and blocks",
                     "url": f"{base_url}{CONTENT_PATH}/",
+                },
+                "tarot": {
+                    "name": "tarot-api",
+                    "version": "1.0.0",
+                    "description": "Tarot card reading with full 78-card deck",
+                    "url": f"{base_url}{TAROT_PATH}/",
                 },
             }
         }
