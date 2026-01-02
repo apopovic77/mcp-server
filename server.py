@@ -274,7 +274,6 @@ storage_mcp = FastMCP(
     name="arkturian-storage",
     streamable_http_path="/",
     stateless_http=True,
-    require_session=False,
     log_level="INFO",
 )
 
@@ -534,7 +533,6 @@ oneal_mcp = FastMCP(
     name="oneal-products",
     streamable_http_path="/",
     stateless_http=True,
-    require_session=False,
     log_level="INFO",
 )
 
@@ -627,7 +625,6 @@ oneal_storage_mcp = FastMCP(
     name="oneal-storage",
     streamable_http_path="/",
     stateless_http=True,
-    require_session=False,
     log_level="INFO",
 )
 
@@ -886,7 +883,6 @@ artrack_mcp = FastMCP(
     name="artrack-api",
     streamable_http_path="/",
     stateless_http=True,
-    require_session=False,
     log_level="INFO",
 )
 
@@ -1022,7 +1018,6 @@ codepilot_mcp = FastMCP(
     name="codepilot-human",
     streamable_http_path="/",
     stateless_http=True,
-    require_session=False,
     log_level="INFO",
 )
 
@@ -1327,7 +1322,6 @@ content_mcp = FastMCP(
     name="content-api",
     streamable_http_path="/",
     stateless_http=True,
-    require_session=False,
     log_level="INFO",
 )
 
@@ -1639,7 +1633,6 @@ ai_mcp = FastMCP(
     name="ai-api",
     streamable_http_path="/",
     stateless_http=True,
-    require_session=False,
     log_level="INFO",
 )
 
