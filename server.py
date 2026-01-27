@@ -102,6 +102,12 @@ async def _fetch_json(
                 response = await client.get(url, headers=headers, params=params or {})
             elif method == "POST":
                 response = await client.post(url, headers=headers, params=params or {}, json=json_body or {})
+            elif method == "PUT":
+                response = await client.put(url, headers=headers, params=params or {}, json=json_body or {})
+            elif method == "PATCH":
+                response = await client.patch(url, headers=headers, params=params or {}, json=json_body or {})
+            elif method == "DELETE":
+                response = await client.delete(url, headers=headers, params=params or {})
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
