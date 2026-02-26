@@ -49,10 +49,6 @@ ARTRACK_API_KEY = os.getenv("ARTRACK_API_KEY", "")
 # Content API
 CONTENT_API_BASE = os.getenv("CONTENT_API_BASE", "https://content-api.arkturian.com")
 
-# Telegram API for human-in-the-loop
-TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "https://telegram-api.arkturian.com")
-TELEGRAM_API_KEY = os.getenv("TELEGRAM_API_KEY", "")
-
 # CodePilot API (for creating change requests)
 CODEPILOT_API_BASE = os.getenv("CODEPILOT_API_BASE", "http://localhost:8201")
 CODEPILOT_API_TOKEN = os.getenv("CODEPILOT_API_TOKEN", "")
@@ -196,37 +192,6 @@ async def call_artrack_api(
         params=params,
         json_body=json_body,
     )
-
-
-async def call_telegram_api(
-    method: str,
-    endpoint: str,
-    *,
-    params: Optional[Dict[str, Any]] = None,
-    json_body: Optional[Dict[str, Any]] = None,
-    timeout: float = 120.0,
-) -> Any:
-    """Call Telegram intervention API for human-in-the-loop."""
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            url = f"{TELEGRAM_API_BASE}{endpoint}"
-            headers = {"X-API-Key": TELEGRAM_API_KEY}
-
-            if method == "GET":
-                response = await client.get(url, headers=headers, params=params or {})
-            elif method == "POST":
-                response = await client.post(url, headers=headers, json=json_body or {})
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as exc:
-            logger.error("Telegram API error %s %s: %s", method, url, exc.response.text)
-            raise
-        except httpx.HTTPError as exc:
-            logger.error("Telegram API request to %s failed: %s", url, exc)
-            raise
 
 
 async def call_ai_api(
@@ -1116,14 +1081,14 @@ codepilot_mcp = FastMCP(
     """,
 )
 async def codepilot_notify_human(message: str) -> Dict[str, Any]:
-    """Send notification to human via Telegram."""
-    if not TELEGRAM_API_KEY:
-        return {"error": "TELEGRAM_API_KEY not configured", "sent": False}
+    """Send notification to human via Telegram (routed through Comm API)."""
+    if not COMM_API_KEY:
+        return {"error": "COMM_API_KEY not configured", "sent": False}
 
     try:
-        result = await call_telegram_api(
+        result = await call_comm_api(
             "POST",
-            "/interventions/notification",
+            "/api/v1/telegram/interventions/notification",
             json_body={"message": message},
         )
         return {"sent": result.get("sent", False), "message_id": result.get("message_id")}
@@ -1158,17 +1123,17 @@ async def codepilot_ask_human(
     options: Optional[List[str]] = None,
     timeout_seconds: int = 300,
 ) -> Dict[str, Any]:
-    """Ask human a question and wait for response."""
-    if not TELEGRAM_API_KEY:
-        return {"error": "TELEGRAM_API_KEY not configured", "response": None}
+    """Ask human a question and wait for response (routed through Comm API)."""
+    if not COMM_API_KEY:
+        return {"error": "COMM_API_KEY not configured", "response": None}
 
     try:
         # Determine endpoint based on options
         if options and len(options) > 0:
             # Approval request with buttons
-            create_result = await call_telegram_api(
+            create_result = await call_comm_api(
                 "POST",
-                "/interventions/approval",
+                "/api/v1/telegram/interventions/approval",
                 json_body={
                     "message": question,
                     "options": options,
@@ -1177,9 +1142,9 @@ async def codepilot_ask_human(
             )
         else:
             # Text input request
-            create_result = await call_telegram_api(
+            create_result = await call_comm_api(
                 "POST",
-                "/interventions/text-input",
+                "/api/v1/telegram/interventions/text-input",
                 json_body={
                     "message": question,
                     "timeout_seconds": timeout_seconds,
@@ -1207,9 +1172,9 @@ async def codepilot_ask_human(
 
             poll_timeout = max(1, min(max_poll, int(remaining)))
 
-            wait_result = await call_telegram_api(
+            wait_result = await call_comm_api(
                 "GET",
-                f"/interventions/{request_id}/wait",
+                f"/api/v1/telegram/interventions/{request_id}/wait",
                 params={"timeout": poll_timeout},
                 timeout=poll_timeout + 10,
             )
@@ -2549,7 +2514,7 @@ async def root() -> Dict[str, Any]:
             "codepilot": {
                 "path": CODEPILOT_PATH,
                 "tools": [tool.name for tool in codepilot_mcp._tool_manager.list_tools()],
-                "upstream": TELEGRAM_API_BASE,
+                "upstream": COMM_API_BASE,
                 "description": "Human-in-the-loop tools for CodePilot",
             },
             "ai": {
