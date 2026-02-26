@@ -10,6 +10,7 @@ Exposes MCP endpoint groups over HTTP/SSE with per-tenant isolation:
   • /codepilot      – Human-in-the-loop tools (Telegram notifications & questions)
   • /ai             – AI text, vision, and image generation tools
   • /content        – Content management API for posts, media, annotations, and blocks
+  • /business       – Business management: Honorarnoten, Rechnungen, Kunden, Transaktionen
 """
 
 from __future__ import annotations
@@ -79,9 +80,14 @@ CODEPILOT_PATH = "/codepilot"
 AI_PATH = "/ai"
 CONTENT_PATH = "/content"
 TAROT_PATH = "/tarot"
+BUSINESS_PATH = "/business"
 
 # Tools API (for Tarot)
 TOOLS_API_BASE = os.getenv("TOOLS_API_BASE", "https://tools-api.arkturian.com")
+
+# Business API
+BUSINESS_API_BASE = os.getenv("BUSINESS_API_BASE", "https://business-api.arkturian.com")
+BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY", "")
 
 # --------------------------------------------------------------------------- #
 # HTTP helpers
@@ -282,6 +288,23 @@ async def call_content_api(
         method,
         f"{CONTENT_API_BASE}{endpoint}",
         headers={},  # No auth required for public endpoints
+        params=params,
+        json_body=json_body,
+    )
+
+
+async def call_business_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call Business API for invoicing, clients, transactions, and documents."""
+    return await _fetch_json(
+        method,
+        f"{BUSINESS_API_BASE}{endpoint}",
+        headers={"X-API-Key": BUSINESS_API_KEY},
         params=params,
         json_body=json_body,
     )
@@ -1854,6 +1877,294 @@ async def tarot_deck_info() -> Dict[str, Any]:
 tarot_app = tarot_mcp.streamable_http_app()
 app.mount(TAROT_PATH, tarot_app)
 
+# --------------------------------------------------------------------------- #
+# Business API MCP – Invoicing, Clients, Transactions, Documents
+# --------------------------------------------------------------------------- #
+
+business_mcp = FastMCP(
+    name="business-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    auth=None,
+    log_level="INFO",
+)
+
+
+# --- Dashboard ---
+
+
+@business_mcp.tool(
+    name="dashboard_summary",
+    description="Get dashboard summary: income/expense YTD and MTD, profit, open documents.",
+)
+async def business_dashboard_summary() -> Dict[str, Any]:
+    return await call_business_api("GET", "/api/v1/dashboard/summary")
+
+
+@business_mcp.tool(
+    name="dashboard_cashflow",
+    description="Get monthly cashflow data (income, expense, profit per month) for a given year.",
+)
+async def business_dashboard_cashflow(year: Optional[int] = None) -> List[Dict[str, Any]]:
+    params = _clean_params(year=year)
+    return await call_business_api("GET", "/api/v1/dashboard/cashflow", params=params)
+
+
+# --- Clients ---
+
+
+@business_mcp.tool(
+    name="clients_list",
+    description="List clients. Optional search by name/company. Returns id, name, company, email, phone, address, city.",
+)
+async def business_clients_list(
+    search: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    params = _clean_params(search=search, limit=limit)
+    return await call_business_api("GET", "/api/v1/clients/", params=params)
+
+
+@business_mcp.tool(
+    name="clients_get",
+    description="Get a single client by ID with all details.",
+)
+async def business_clients_get(client_id: int) -> Dict[str, Any]:
+    return await call_business_api("GET", f"/api/v1/clients/{client_id}")
+
+
+@business_mcp.tool(
+    name="clients_create",
+    description="Create a new client. Required: name. Optional: company, email, phone, address, zip, city, country, uid_number, notes.",
+)
+async def business_clients_create(
+    name: str,
+    company: Optional[str] = None,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    address: Optional[str] = None,
+    zip: Optional[str] = None,
+    city: Optional[str] = None,
+    country: str = "AT",
+    uid_number: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {"name": name, "country": country}
+    for k, v in {"company": company, "email": email, "phone": phone, "address": address,
+                  "zip": zip, "city": city, "uid_number": uid_number, "notes": notes}.items():
+        if v is not None:
+            body[k] = v
+    return await call_business_api("POST", "/api/v1/clients/", json_body=body)
+
+
+@business_mcp.tool(
+    name="clients_update",
+    description="Update an existing client. Pass only the fields you want to change.",
+)
+async def business_clients_update(
+    client_id: int,
+    name: Optional[str] = None,
+    company: Optional[str] = None,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    address: Optional[str] = None,
+    zip: Optional[str] = None,
+    city: Optional[str] = None,
+    country: Optional[str] = None,
+    uid_number: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {}
+    for k, v in {"name": name, "company": company, "email": email, "phone": phone,
+                  "address": address, "zip": zip, "city": city, "country": country,
+                  "uid_number": uid_number, "notes": notes}.items():
+        if v is not None:
+            body[k] = v
+    return await call_business_api("PATCH", f"/api/v1/clients/{client_id}", json_body=body)
+
+
+# --- Documents ---
+
+
+@business_mcp.tool(
+    name="documents_list",
+    description="List documents (Honorarnoten, Rechnungen). Filter by doc_type (honorarnote, invoice), status (draft, sent, paid, overdue, cancelled), client_id, year.",
+)
+async def business_documents_list(
+    doc_type: Optional[str] = None,
+    status: Optional[str] = None,
+    client_id: Optional[int] = None,
+    year: Optional[int] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    params = _clean_params(doc_type=doc_type, status=status, client_id=client_id, year=year, limit=limit)
+    return await call_business_api("GET", "/api/v1/documents/", params=params)
+
+
+@business_mcp.tool(
+    name="documents_get",
+    description="Get a single document with all line items and client details.",
+)
+async def business_documents_get(doc_id: int) -> Dict[str, Any]:
+    return await call_business_api("GET", f"/api/v1/documents/{doc_id}")
+
+
+@business_mcp.tool(
+    name="create_honorarnote",
+    description="Create a new Honorarnote. Required: client_id, hours, rate, description. Auto-generates PDF. Returns document with items.",
+)
+async def business_create_honorarnote(
+    client_id: int,
+    hours: float,
+    rate: float,
+    description: str,
+    vat_rate: float = 0.0,
+    issued_date: Optional[str] = None,
+    due_days: int = 14,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "client_id": client_id,
+        "hours": hours,
+        "rate": rate,
+        "description": description,
+        "vat_rate": vat_rate,
+        "due_days": due_days,
+    }
+    if issued_date:
+        body["issued_date"] = issued_date
+    if notes:
+        body["notes"] = notes
+    return await call_business_api("POST", "/api/v1/documents/honorarnote", json_body=body)
+
+
+@business_mcp.tool(
+    name="create_invoice",
+    description="Create a new invoice with line items. Required: client_id, items (list of {description, quantity, unit_price}). Auto-generates PDF.",
+)
+async def business_create_invoice(
+    client_id: int,
+    items: List[Dict[str, Any]],
+    vat_rate: float = 0.0,
+    issued_date: Optional[str] = None,
+    due_days: int = 14,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "client_id": client_id,
+        "items": items,
+        "vat_rate": vat_rate,
+        "due_days": due_days,
+    }
+    if issued_date:
+        body["issued_date"] = issued_date
+    if notes:
+        body["notes"] = notes
+    return await call_business_api("POST", "/api/v1/documents/invoice", json_body=body)
+
+
+@business_mcp.tool(
+    name="documents_mark_paid",
+    description="Mark a document as paid. Optional paid_date (YYYY-MM-DD, defaults to today). Automatically creates an income transaction.",
+)
+async def business_documents_mark_paid(
+    doc_id: int,
+    paid_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {}
+    if paid_date:
+        body["paid_date"] = paid_date
+    return await call_business_api("POST", f"/api/v1/documents/{doc_id}/mark-paid", json_body=body)
+
+
+@business_mcp.tool(
+    name="documents_regenerate_pdf",
+    description="Regenerate the PDF for an existing document (e.g. after template changes).",
+)
+async def business_documents_regenerate_pdf(doc_id: int) -> Dict[str, Any]:
+    return await call_business_api("POST", f"/api/v1/documents/{doc_id}/regenerate-pdf")
+
+
+@business_mcp.tool(
+    name="documents_cancel",
+    description="Cancel a document (status → cancelled).",
+)
+async def business_documents_cancel(doc_id: int) -> Dict[str, Any]:
+    return await call_business_api("POST", f"/api/v1/documents/{doc_id}/cancel")
+
+
+# --- Transactions ---
+
+
+@business_mcp.tool(
+    name="transactions_list",
+    description="List transactions. Filter by tx_type (income/expense), year, category. Returns date, amount, category, description.",
+)
+async def business_transactions_list(
+    tx_type: Optional[str] = None,
+    year: Optional[int] = None,
+    category: Optional[str] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    params = _clean_params(tx_type=tx_type, year=year, category=category, limit=limit)
+    return await call_business_api("GET", "/api/v1/transactions", params=params)
+
+
+@business_mcp.tool(
+    name="transactions_create",
+    description="Create a transaction. Required: tx_type (income/expense), amount. Optional: category, description, tx_date (YYYY-MM-DD), vat_rate, client_id.",
+)
+async def business_transactions_create(
+    tx_type: str,
+    amount: float,
+    category: Optional[str] = None,
+    description: Optional[str] = None,
+    tx_date: Optional[str] = None,
+    vat_rate: float = 0.0,
+    client_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    body = {"tx_type": tx_type, "amount": amount, "vat_rate": vat_rate}
+    for k, v in {"category": category, "description": description, "tx_date": tx_date, "client_id": client_id}.items():
+        if v is not None:
+            body[k] = v
+    return await call_business_api("POST", "/api/v1/transactions", json_body=body)
+
+
+@business_mcp.tool(
+    name="transactions_delete",
+    description="Delete a transaction by ID. Only works for transactions not linked to documents.",
+)
+async def business_transactions_delete(tx_id: int) -> Dict[str, str]:
+    await call_business_api("DELETE", f"/api/v1/transactions/{tx_id}")
+    return {"status": "deleted", "id": str(tx_id)}
+
+
+# --- Categories ---
+
+
+@business_mcp.tool(
+    name="categories_list",
+    description="List transaction categories. Optional filter by cat_type (income/expense).",
+)
+async def business_categories_list(cat_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    params = _clean_params(cat_type=cat_type)
+    return await call_business_api("GET", "/api/v1/categories", params=params)
+
+
+# --- Service Health ---
+
+
+@business_mcp.tool(
+    name="service_health",
+    description="Health check for Business API.",
+)
+async def business_service_health() -> Dict[str, Any]:
+    return await call_business_api("GET", "/health")
+
+
+business_app = business_mcp.streamable_http_app()
+app.mount(BUSINESS_PATH, business_app)
+
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
 _oneal_storage_stack = AsyncExitStack()
@@ -1862,6 +2173,7 @@ _codepilot_stack = AsyncExitStack()
 _content_stack = AsyncExitStack()
 _ai_stack = AsyncExitStack()
 _tarot_stack = AsyncExitStack()
+_business_stack = AsyncExitStack()
 
 
 @app.on_event("startup")
@@ -1890,9 +2202,15 @@ async def startup() -> None:
     await _tarot_stack.enter_async_context(tarot_mcp.session_manager.run())
     await tarot_app.router.startup()
 
+    await _business_stack.enter_async_context(business_mcp.session_manager.run())
+    await business_app.router.startup()
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await business_app.router.shutdown()
+    await _business_stack.aclose()
+
     await tarot_app.router.shutdown()
     await _tarot_stack.aclose()
 
@@ -1923,8 +2241,8 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.6.0",
-        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, Content API, and Tarot",
+        "version": "2.7.0",
+        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, Content API, Business API, and Tarot",
         "endpoints": {
             "storage": {
                 "path": STORAGE_PATH,
@@ -1972,6 +2290,12 @@ async def root() -> Dict[str, Any]:
                 "upstream": TOOLS_API_BASE,
                 "description": "Tarot card reading with full 78-card deck",
             },
+            "business": {
+                "path": BUSINESS_PATH,
+                "tools": [tool.name for tool in business_mcp._tool_manager.list_tools()],
+                "upstream": BUSINESS_API_BASE,
+                "description": "Business management: Honorarnoten, Rechnungen, Kunden, Transaktionen, Dashboard",
+            },
         },
     }
 
@@ -2010,6 +2334,13 @@ async def health() -> Dict[str, Any]:
     except httpx.HTTPError as exc:
         results["status"] = "degraded"
         results["content_error"] = str(exc)
+
+    if BUSINESS_API_KEY:
+        try:
+            results["business"] = await business_service_health()
+        except httpx.HTTPError as exc:
+            results["status"] = "degraded"
+            results["business_error"] = str(exc)
 
     if results["status"] != "healthy":
         raise HTTPException(status_code=207, detail=results)
@@ -2067,6 +2398,12 @@ async def well_known(request: Request) -> JSONResponse:
                     "version": "1.0.0",
                     "description": "Tarot card reading with full 78-card deck",
                     "url": f"{base_url}{TAROT_PATH}/",
+                },
+                "business": {
+                    "name": "business-api",
+                    "version": "1.0.0",
+                    "description": "Business management: Honorarnoten, invoices, clients, transactions, dashboard",
+                    "url": f"{base_url}{BUSINESS_PATH}/",
                 },
             }
         }
