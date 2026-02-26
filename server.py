@@ -11,6 +11,7 @@ Exposes MCP endpoint groups over HTTP/SSE with per-tenant isolation:
   • /ai             – AI text, vision, and image generation tools
   • /content        – Content management API for posts, media, annotations, and blocks
   • /business       – Business management: Honorarnoten, Rechnungen, Kunden, Transaktionen
+  • /comm           – Unified communication: Email, Telegram, Interventions
 """
 
 from __future__ import annotations
@@ -81,6 +82,7 @@ AI_PATH = "/ai"
 CONTENT_PATH = "/content"
 TAROT_PATH = "/tarot"
 BUSINESS_PATH = "/business"
+COMM_PATH = "/comm"
 
 # Tools API (for Tarot)
 TOOLS_API_BASE = os.getenv("TOOLS_API_BASE", "https://tools-api.arkturian.com")
@@ -88,6 +90,10 @@ TOOLS_API_BASE = os.getenv("TOOLS_API_BASE", "https://tools-api.arkturian.com")
 # Business API
 BUSINESS_API_BASE = os.getenv("BUSINESS_API_BASE", "https://business-api.arkturian.com")
 BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY", "")
+
+# Comm API
+COMM_API_BASE = os.getenv("COMM_API_BASE", "https://comm-api.arkturian.com")
+COMM_API_KEY = os.getenv("COMM_API_KEY", "")
 
 # --------------------------------------------------------------------------- #
 # HTTP helpers
@@ -101,8 +107,9 @@ async def _fetch_json(
     headers: Dict[str, str],
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
+    timeout: Optional[float] = None,
 ) -> Any:
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=timeout or HTTP_TIMEOUT) as client:
         try:
             if method == "GET":
                 response = await client.get(url, headers=headers, params=params or {})
@@ -307,6 +314,25 @@ async def call_business_api(
         headers={"X-API-Key": BUSINESS_API_KEY},
         params=params,
         json_body=json_body,
+    )
+
+
+async def call_comm_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    timeout: float = 120.0,
+) -> Any:
+    """Call Comm API for email, telegram, and unified messaging."""
+    return await _fetch_json(
+        method,
+        f"{COMM_API_BASE}{endpoint}",
+        headers={"X-API-Key": COMM_API_KEY},
+        params=params,
+        json_body=json_body,
+        timeout=timeout,
     )
 
 
@@ -1662,7 +1688,7 @@ async def content_service_health() -> Dict[str, Any]:
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="arkturian-mcp", version="2.6.0", description="Arkturian MCP Aggregator with AI generation, Content API, and Tarot")
+app = FastAPI(title="arkturian-mcp", version="2.8.0", description="Arkturian MCP Aggregator with AI generation, Content API, Business API, and Comm API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -2165,6 +2191,253 @@ async def business_service_health() -> Dict[str, Any]:
 business_app = business_mcp.streamable_http_app()
 app.mount(BUSINESS_PATH, business_app)
 
+
+# Comm API MCP -----------------------------------------------------------
+comm_mcp = FastMCP(
+    name="comm-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    auth=None,
+    log_level="INFO",
+)
+
+
+# --- Unified Send ---
+
+
+@comm_mcp.tool(
+    name="send_email",
+    description="""Send an email through the Comm API.
+
+    Args:
+        to: Recipient email address
+        subject: Email subject
+        body: Plain text body
+        source: Source identity (default: "arkturian"). Options: "arkturian", "spreadyourwings"
+        template: Optional template name (e.g. "honorarnote_send", "invoice_send", "payment_reminder", "notification")
+        template_data: Optional dict of data for template rendering
+    """,
+)
+async def comm_send_email(
+    to: str,
+    subject: str,
+    body: str = "",
+    source: str = "arkturian",
+    template: Optional[str] = None,
+    template_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    json_body: Dict[str, Any] = {
+        "source": source,
+        "to": to,
+        "subject": subject,
+        "body": body,
+    }
+    if template:
+        json_body["template"] = template
+    if template_data:
+        json_body["template_data"] = template_data
+    return await call_comm_api("POST", "/api/v1/email/send", json_body=json_body)
+
+
+@comm_mcp.tool(
+    name="send_telegram",
+    description="""Send a Telegram message through the Comm API.
+
+    Args:
+        message: Message text (Markdown supported)
+        chat_id: Optional Telegram chat ID (defaults to admin chat)
+    """,
+)
+async def comm_send_telegram(
+    message: str,
+    chat_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    json_body: Dict[str, Any] = {"message": message}
+    if chat_id:
+        json_body["chat_id"] = chat_id
+    return await call_comm_api("POST", "/api/v1/telegram/send", json_body=json_body)
+
+
+@comm_mcp.tool(
+    name="send_message",
+    description="""Send a message via any channel (unified endpoint).
+
+    Args:
+        channel: "email" or "telegram"
+        to: Recipient (email address or Telegram chat_id)
+        body: Message body
+        source: Source identity (default: "arkturian")
+        subject: Email subject (required for email, ignored for telegram)
+        template: Optional template name
+        template_data: Optional template rendering data
+    """,
+)
+async def comm_send_message(
+    channel: str,
+    to: str,
+    body: str,
+    source: str = "arkturian",
+    subject: Optional[str] = None,
+    template: Optional[str] = None,
+    template_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    json_body: Dict[str, Any] = {
+        "channel": channel,
+        "source": source,
+        "to": to,
+        "body": body,
+    }
+    if subject:
+        json_body["subject"] = subject
+    if template:
+        json_body["template"] = template
+    if template_data:
+        json_body["template_data"] = template_data
+    return await call_comm_api("POST", "/api/v1/send", json_body=json_body)
+
+
+# --- Interventions (Human-in-the-loop) ---
+
+
+@comm_mcp.tool(
+    name="notify_human",
+    description="""Send a notification to the human via Telegram.
+
+    Use this to inform the human about:
+    - Successful completion of a task
+    - Errors or failures that occurred
+    - Important status updates
+
+    The message is sent immediately and does not wait for a response.
+    """,
+)
+async def comm_notify_human(message: str) -> Dict[str, Any]:
+    if not COMM_API_KEY:
+        return {"error": "COMM_API_KEY not configured", "sent": False}
+    try:
+        result = await call_comm_api(
+            "POST",
+            "/api/v1/telegram/interventions/notification",
+            json_body={"message": message},
+        )
+        return {"sent": result.get("sent", False), "message_id": result.get("message_id")}
+    except Exception as e:
+        logger.error("Failed to send notification: %s", e)
+        return {"error": str(e), "sent": False}
+
+
+@comm_mcp.tool(
+    name="ask_human",
+    description="""Ask the human a question via Telegram and wait for their response.
+
+    Two modes:
+    1. With options (buttons): ask_human("Deploy?", options=["Yes", "No"])
+    2. Without options (text input): ask_human("What should I do?")
+
+    Returns the human's response or error if timeout.
+    Default timeout: 5 minutes.
+    """,
+)
+async def comm_ask_human(
+    question: str,
+    options: Optional[List[str]] = None,
+    timeout_seconds: int = 300,
+) -> Dict[str, Any]:
+    if not COMM_API_KEY:
+        return {"error": "COMM_API_KEY not configured", "response": None}
+    try:
+        if options and len(options) > 0:
+            create_result = await call_comm_api(
+                "POST",
+                "/api/v1/telegram/interventions/approval",
+                json_body={
+                    "message": question,
+                    "options": options,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+        else:
+            create_result = await call_comm_api(
+                "POST",
+                "/api/v1/telegram/interventions/text-input",
+                json_body={
+                    "message": question,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+
+        request_id = create_result.get("id")
+        if not request_id:
+            return {"error": "Failed to create intervention request", "response": None}
+
+        start_time = time.time()
+        max_poll = 60
+
+        while True:
+            elapsed = time.time() - start_time
+            remaining = timeout_seconds - elapsed
+            if remaining <= 0:
+                return {"error": "Timeout waiting for human response", "response": None, "request_id": request_id}
+
+            poll_timeout = max(1, min(max_poll, int(remaining)))
+            wait_result = await call_comm_api(
+                "GET",
+                f"/api/v1/telegram/interventions/{request_id}/wait",
+                params={"timeout": poll_timeout},
+                timeout=poll_timeout + 10,
+            )
+
+            status = wait_result.get("status")
+            if status == "responded":
+                return {
+                    "response": wait_result.get("response") or wait_result.get("response_text"),
+                    "responded_by": wait_result.get("responded_by"),
+                    "request_id": request_id,
+                }
+            elif status in ("expired", "cancelled"):
+                return {"error": f"Request {status}", "response": None, "request_id": request_id}
+
+    except Exception as e:
+        logger.error("Failed to ask human: %s", e)
+        return {"error": str(e), "response": None}
+
+
+# --- Info ---
+
+
+@comm_mcp.tool(
+    name="list_sources",
+    description="List available communication source identities.",
+)
+async def comm_list_sources() -> List[Dict[str, Any]]:
+    return await call_comm_api("GET", "/api/v1/sources")
+
+
+@comm_mcp.tool(
+    name="message_history",
+    description="Get sent message history. Optional filters: channel (email/telegram), source, limit.",
+)
+async def comm_message_history(
+    channel: Optional[str] = None,
+    source: Optional[str] = None,
+    limit: int = 20,
+) -> Dict[str, Any]:
+    params = _clean_params(channel=channel, source=source, limit=limit)
+    return await call_comm_api("GET", "/api/v1/messages", params=params)
+
+
+@comm_mcp.tool(
+    name="service_health",
+    description="Health check for Comm API.",
+)
+async def comm_service_health() -> Dict[str, Any]:
+    return await call_comm_api("GET", "/health")
+
+
+comm_app = comm_mcp.streamable_http_app()
+app.mount(COMM_PATH, comm_app)
+
+
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
 _oneal_storage_stack = AsyncExitStack()
@@ -2174,6 +2447,7 @@ _content_stack = AsyncExitStack()
 _ai_stack = AsyncExitStack()
 _tarot_stack = AsyncExitStack()
 _business_stack = AsyncExitStack()
+_comm_stack = AsyncExitStack()
 
 
 @app.on_event("startup")
@@ -2205,9 +2479,15 @@ async def startup() -> None:
     await _business_stack.enter_async_context(business_mcp.session_manager.run())
     await business_app.router.startup()
 
+    await _comm_stack.enter_async_context(comm_mcp.session_manager.run())
+    await comm_app.router.startup()
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await comm_app.router.shutdown()
+    await _comm_stack.aclose()
+
     await business_app.router.shutdown()
     await _business_stack.aclose()
 
@@ -2241,7 +2521,7 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.7.0",
+        "version": "2.8.0",
         "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, Content API, Business API, and Tarot",
         "endpoints": {
             "storage": {
@@ -2296,6 +2576,12 @@ async def root() -> Dict[str, Any]:
                 "upstream": BUSINESS_API_BASE,
                 "description": "Business management: Honorarnoten, Rechnungen, Kunden, Transaktionen, Dashboard",
             },
+            "comm": {
+                "path": COMM_PATH,
+                "tools": [tool.name for tool in comm_mcp._tool_manager.list_tools()],
+                "upstream": COMM_API_BASE,
+                "description": "Unified communication: Email, Telegram, Interventions",
+            },
         },
     }
 
@@ -2341,6 +2627,13 @@ async def health() -> Dict[str, Any]:
         except httpx.HTTPError as exc:
             results["status"] = "degraded"
             results["business_error"] = str(exc)
+
+    if COMM_API_KEY:
+        try:
+            results["comm"] = await comm_service_health()
+        except httpx.HTTPError as exc:
+            results["status"] = "degraded"
+            results["comm_error"] = str(exc)
 
     if results["status"] != "healthy":
         raise HTTPException(status_code=207, detail=results)
@@ -2404,6 +2697,12 @@ async def well_known(request: Request) -> JSONResponse:
                     "version": "1.0.0",
                     "description": "Business management: Honorarnoten, invoices, clients, transactions, dashboard",
                     "url": f"{base_url}{BUSINESS_PATH}/",
+                },
+                "comm": {
+                    "name": "comm-api",
+                    "version": "1.0.0",
+                    "description": "Unified communication: Email, Telegram, Interventions",
+                    "url": f"{base_url}{COMM_PATH}/",
                 },
             }
         }
