@@ -1684,6 +1684,106 @@ tree_mcp = FastMCP(
 )
 
 
+@tree_mcp.resource(
+    uri="docs://tree/guide",
+    name="Tree API Guide",
+    description="Read this first! Complete guide for the Tree API: data model, PM fields, workflows, and usage examples.",
+)
+async def tree_guide() -> str:
+    return """# Tree API — AI Quick Reference
+
+## Overview
+Hierarchical tree editor for project planning, work breakdown structures (WBS),
+and general-purpose nested data. Each project has one root node with unlimited
+depth of children. Supports project management fields on every node.
+
+## Data Model
+
+### Project
+- id, name, node_count, created_at, updated_at
+- Each project has exactly one root node (auto-created)
+
+### Node
+| Field | Type | Description |
+|-------|------|-------------|
+| id | int | Auto-generated |
+| parent_id | int | Parent node (null for root) |
+| position | int | Sort order among siblings |
+| name | string | **Required** — node title |
+| description | string | Free text, supports markdown |
+| start_date | string | ISO date (YYYY-MM-DD), e.g. "2026-04-01" |
+| duration_days | float | Duration in decimal days, e.g. 3.5 = 3.5 Tage |
+| budget | float | Planned budget (decimal) |
+| actual_cost | float | Actual cost (decimal) |
+| metadata | dict | Arbitrary JSON key-value pairs |
+| children | list | Nested child nodes (in tree responses) |
+
+### PM Fields — How They Work
+- **start_date + duration_days** define the time window (NOT start + end date!)
+- End date is computed: `end = start + duration_days`
+- Duration is independent of start date — "task takes 3.5 days" regardless of when
+- Budget vs actual_cost: progress ratio = actual_cost / budget
+- These fields are optional — nodes without dates still work fine
+
+## Key Workflows
+
+### 1. Create a Project with WBS
+```
+1. projects_create(name="My Project")        → get project with root_node_id
+2. tree_get(project_id)                      → see the root node
+3. nodes_create(project_id, parent_id=root_id, name="Phase 1")
+4. nodes_create(project_id, parent_id=phase1_id, name="Task 1.1",
+     start_date="2026-04-01", duration_days=5, budget=2000)
+```
+
+### 2. Assign PM Data to Existing Nodes
+```
+1. tree_get(project_id)                      → browse the tree, find node IDs
+2. nodes_update(node_id, start_date="2026-04-01", duration_days=14.5,
+     budget=5000, actual_cost=1200)
+```
+
+### 3. Import a Complete Tree (JSON)
+```
+tree_import(name="Project X", tree={
+  "name": "Root",
+  "children": [
+    {"name": "Phase 1", "start_date": "2026-04-01", "duration_days": 30, "children": [
+      {"name": "Task 1.1", "duration_days": 5, "budget": 1000},
+      {"name": "Task 1.2", "duration_days": 10, "budget": 2000}
+    ]},
+    {"name": "Phase 2", "start_date": "2026-05-01", "duration_days": 20}
+  ]
+})
+```
+
+### 4. Reorganize Nodes
+```
+nodes_move(node_id, parent_id=new_parent, position=0)   → move + reorder
+nodes_delete(node_id)                                     → cascade deletes children
+```
+
+### 5. Export for Backup
+```
+tree_export(project_id)   → clean JSON without internal IDs
+```
+
+## Tips
+- Use tree_get for overview, nodes_get for single node details
+- position=0 means first child, position=1 means second, etc.
+- nodes_move can move across branches (reparent)
+- Deleting a node deletes ALL children (cascade)
+- Cannot delete the root node — delete the project instead
+- duration_days supports decimals: 0.5 = half day, 3.5 = 3.5 days
+- budget/actual_cost have no currency — up to the user to define
+
+## Frontend
+The tree is visualized at mindmap.arkturian.com with 10 views:
+MindMap, TreeView, TidyTree, Sunburst, Radial, Icicle, Treemap, CirclePack, Force, Gantt.
+The Gantt view shows timeline bars based on start_date + duration_days.
+"""
+
+
 # --- Projects ---
 
 @tree_mcp.tool(
