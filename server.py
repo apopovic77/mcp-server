@@ -10,6 +10,7 @@ Exposes MCP endpoint groups over HTTP/SSE with per-tenant isolation:
   • /codepilot      – Human-in-the-loop tools (Telegram notifications & questions)
   • /ai             – AI text, vision, and image generation tools
   • /content        – Content management API for posts, media, annotations, and blocks
+  • /tree           – Collaborative tree editing with node-level CRUD and real-time sync
   • /business       – Business management: Honorarnoten, Rechnungen, Kunden, Transaktionen
   • /comm           – Unified communication: Email, Telegram, Interventions
 """
@@ -49,6 +50,9 @@ ARTRACK_API_KEY = os.getenv("ARTRACK_API_KEY", "")
 # Content API
 CONTENT_API_BASE = os.getenv("CONTENT_API_BASE", "https://content-api.arkturian.com")
 
+# Tree API
+TREE_API_BASE = os.getenv("TREE_API_BASE", "https://tree-api.arkturian.com")
+
 # CodePilot API (for creating change requests)
 CODEPILOT_API_BASE = os.getenv("CODEPILOT_API_BASE", "http://localhost:8201")
 CODEPILOT_API_TOKEN = os.getenv("CODEPILOT_API_TOKEN", "")
@@ -76,6 +80,7 @@ ARTRACK_PATH = "/artrack"
 CODEPILOT_PATH = "/codepilot"
 AI_PATH = "/ai"
 CONTENT_PATH = "/content"
+TREE_PATH = "/tree"
 TAROT_PATH = "/tarot"
 BUSINESS_PATH = "/business"
 COMM_PATH = "/comm"
@@ -260,6 +265,23 @@ async def call_content_api(
         method,
         f"{CONTENT_API_BASE}{endpoint}",
         headers={},  # No auth required for public endpoints
+        params=params,
+        json_body=json_body,
+    )
+
+
+async def call_tree_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call Tree API for projects, nodes, and tree operations."""
+    return await _fetch_json(
+        method,
+        f"{TREE_API_BASE}{endpoint}",
+        headers={},
         params=params,
         json_body=json_body,
     )
@@ -1650,10 +1672,210 @@ async def content_service_health() -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Tree API  –  Collaborative tree editing with node-level CRUD
+# --------------------------------------------------------------------------- #
+
+tree_mcp = FastMCP(
+    name="tree-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    auth=None,
+    log_level="INFO",
+)
+
+
+# --- Projects ---
+
+@tree_mcp.tool(
+    name="projects_list",
+    description="""List all tree projects.
+
+    Returns a list of projects with:
+    - id, name, node_count
+    - created_at, updated_at
+    """,
+)
+async def tree_projects_list() -> Any:
+    return await call_tree_api("GET", "/api/v1/projects/")
+
+
+@tree_mcp.tool(
+    name="projects_get",
+    description="Get a single project by ID.",
+)
+async def tree_projects_get(project_id: int) -> Any:
+    return await call_tree_api("GET", f"/api/v1/projects/{project_id}")
+
+
+@tree_mcp.tool(
+    name="projects_create",
+    description="""Create a new tree project with an empty root node.
+
+    Required: name (str).
+    Returns the project with its root_node_id.
+    """,
+)
+async def tree_projects_create(name: str) -> Any:
+    return await call_tree_api("POST", "/api/v1/projects/", json_body={"name": name})
+
+
+@tree_mcp.tool(
+    name="projects_delete",
+    description="Delete a project and all its nodes.",
+)
+async def tree_projects_delete(project_id: int) -> Any:
+    return await call_tree_api("DELETE", f"/api/v1/projects/{project_id}")
+
+
+# --- Tree (full hierarchy) ---
+
+@tree_mcp.tool(
+    name="tree_get",
+    description="""Get the full tree for a project as nested JSON.
+
+    Returns recursive structure:
+    {id, name, description, start_date, end_date, budget, actual_cost, metadata, children: [...]}
+
+    Use this for initial load or overview. For large trees, prefer node-level operations.
+    """,
+)
+async def tree_get(project_id: int) -> Any:
+    return await call_tree_api("GET", f"/api/v1/projects/{project_id}/tree")
+
+
+@tree_mcp.tool(
+    name="tree_import",
+    description="""Import a JSON tree into a new project.
+
+    Required: name (str), tree (dict with 'name' and optional 'children', 'description', etc.)
+    Creates the project and recursively inserts all nodes.
+    """,
+)
+async def tree_import(name: str, tree: Dict[str, Any]) -> Any:
+    return await call_tree_api("POST", "/api/v1/projects/import", json_body={"name": name, "tree": tree})
+
+
+@tree_mcp.tool(
+    name="tree_export",
+    description="""Export a project tree as clean JSON (no internal IDs).
+
+    Returns the tree structure suitable for backup or transfer.
+    """,
+)
+async def tree_export(project_id: int) -> Any:
+    return await call_tree_api("GET", f"/api/v1/projects/{project_id}/export")
+
+
+# --- Nodes ---
+
+@tree_mcp.tool(
+    name="nodes_create",
+    description="""Create a new node in a project.
+
+    Required: project_id, parent_id, name.
+    Optional: description, start_date (YYYY-MM-DD), end_date (YYYY-MM-DD),
+              budget (decimal), actual_cost (decimal), metadata (dict).
+
+    Returns the created node with its ID.
+    """,
+)
+async def tree_nodes_create(
+    project_id: int,
+    parent_id: int,
+    name: str,
+    description: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    budget: Optional[float] = None,
+    actual_cost: Optional[float] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    body = {"parent_id": parent_id, "name": name}
+    body.update(_clean_params(
+        description=description,
+        start_date=start_date,
+        end_date=end_date,
+        budget=budget,
+        actual_cost=actual_cost,
+        metadata=metadata,
+    ))
+    return await call_tree_api("POST", f"/api/v1/projects/{project_id}/nodes", json_body=body)
+
+
+@tree_mcp.tool(
+    name="nodes_get",
+    description="Get a single node by ID with all fields.",
+)
+async def tree_nodes_get(node_id: int) -> Any:
+    return await call_tree_api("GET", f"/api/v1/nodes/{node_id}")
+
+
+@tree_mcp.tool(
+    name="nodes_update",
+    description="""Update a node. Only provided fields are changed.
+
+    Optional: name, description, start_date (YYYY-MM-DD), end_date (YYYY-MM-DD),
+              budget (decimal), actual_cost (decimal), metadata (dict).
+    """,
+)
+async def tree_nodes_update(
+    node_id: int,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    budget: Optional[float] = None,
+    actual_cost: Optional[float] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    body = _clean_params(
+        name=name,
+        description=description,
+        start_date=start_date,
+        end_date=end_date,
+        budget=budget,
+        actual_cost=actual_cost,
+        metadata=metadata,
+    )
+    return await call_tree_api("PATCH", f"/api/v1/nodes/{node_id}", json_body=body)
+
+
+@tree_mcp.tool(
+    name="nodes_delete",
+    description="""Delete a node and all its children (cascade).
+
+    Returns {deleted_ids: [...]}.
+    Cannot delete the root node.
+    """,
+)
+async def tree_nodes_delete(node_id: int) -> Any:
+    return await call_tree_api("DELETE", f"/api/v1/nodes/{node_id}")
+
+
+@tree_mcp.tool(
+    name="nodes_move",
+    description="""Move a node to a new parent and/or position.
+
+    Required: node_id, parent_id (new parent), position (0-based index among siblings).
+    """,
+)
+async def tree_nodes_move(node_id: int, parent_id: int, position: int) -> Any:
+    return await call_tree_api("PATCH", f"/api/v1/nodes/{node_id}/move", json_body={"parent_id": parent_id, "position": position})
+
+
+@tree_mcp.tool(
+    name="service_health",
+    description="Health check for the Tree API.",
+)
+async def tree_service_health() -> Any:
+    return await call_tree_api("GET", "/health")
+
+
+# --------------------------------------------------------------------------- #
 # FastAPI wrapper
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="arkturian-mcp", version="2.8.0", description="Arkturian MCP Aggregator with AI generation, Content API, Business API, and Comm API")
+app = FastAPI(title="arkturian-mcp", version="2.9.0", description="Arkturian MCP Aggregator with AI generation, Content API, Tree API, Business API, and Comm API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1670,12 +1892,14 @@ oneal_storage_app = oneal_storage_mcp.streamable_http_app()
 artrack_app = artrack_mcp.streamable_http_app()
 codepilot_app = codepilot_mcp.streamable_http_app()
 content_app = content_mcp.streamable_http_app()
+tree_app = tree_mcp.streamable_http_app()
 app.mount(STORAGE_PATH, storage_app)
 app.mount(ONEAL_PATH, oneal_app)
 app.mount(ONEAL_STORAGE_PATH, oneal_storage_app)
 app.mount(ARTRACK_PATH, artrack_app)
 app.mount(CODEPILOT_PATH, codepilot_app)
 app.mount(CONTENT_PATH, content_app)
+app.mount(TREE_PATH, tree_app)
 ai_mcp = FastMCP(
     name="ai-api",
     streamable_http_path="/",
@@ -1881,6 +2105,97 @@ business_mcp = FastMCP(
 )
 
 
+# --- AI Documentation Resource ---
+
+
+@business_mcp.resource(
+    uri="docs://business/guide",
+    name="Business API Guide",
+    description="Read this first! Complete guide for the Business API: workflows, tools, data model, and usage examples.",
+)
+async def business_guide() -> str:
+    return """# Business API — AI Quick Reference
+
+## Overview
+Multi-tenant business management for Alex Popovic (Arkturian).
+Handles Honorarnoten (fee notes), Rechnungen (invoices), clients, transactions, and EUeR.
+Austrian tax rules apply (Kleinunternehmerregelung, 0% VAT default).
+
+## Key Workflows
+
+### 1. Create & Send Honorarnote
+```
+1. clients_list(search="name")           → get client_id
+2. create_honorarnote(client_id, hours, rate, description)  → creates doc + PDF
+3. documents_send(doc_id)                → emails PDF to client, status → sent
+4. documents_mark_paid(doc_id)           → status → paid, creates income transaction
+```
+
+### 2. Create & Send Invoice
+```
+1. clients_list(search="name")           → get client_id
+2. create_invoice(client_id, items=[{description, quantity, unit_price}])
+3. documents_send(doc_id)                → emails PDF to client
+4. documents_mark_paid(doc_id)           → status → paid
+```
+
+### 3. Record Expense
+```
+transactions_create(tx_type="expense", amount=X, category="...", description="...")
+```
+
+### 4. Financial Overview
+```
+dashboard_summary()                      → YTD/MTD income, expenses, profit
+dashboard_cashflow(year=2026)            → monthly breakdown
+```
+
+## Data Model
+
+### Clients
+- id, name, company, email, phone, address, zip, city, country, uid_number
+- Each document is linked to a client
+
+### Documents (Honorarnoten & Rechnungen)
+- doc_type: "honorarnote" or "invoice"
+- status: draft → sent → paid (or cancelled/overdue)
+- doc_number: auto-generated (HN-YYYY-NNN or RE-YYYY-NNN)
+- Has line items, totals, PDF, dates
+
+### Transactions
+- tx_type: "income" or "expense"
+- Paid documents auto-create income transactions
+- Manual expenses via transactions_create
+
+### Categories
+- Used for transaction categorization
+- cat_type: "income" or "expense"
+
+## Important Defaults
+- VAT rate: 0% (Kleinunternehmerregelung — VAT exempt)
+- Currency: EUR
+- Due days: 14
+- Country: AT (Austria)
+
+## Document Lifecycle
+```
+draft  →  sent (via documents_send)  →  paid (via documents_mark_paid)
+  ↓                                        ↓
+cancelled                              creates income transaction
+```
+
+## Common Clients (frequently used)
+Use clients_list() to get current list with IDs.
+
+## Tips
+- documents_send() uses the client's email by default. Override with recipient_email param.
+- documents_regenerate_pdf() after template changes to update existing PDFs.
+- dashboard_summary() gives a quick financial overview.
+- All monetary amounts are in EUR.
+- Dates use YYYY-MM-DD format.
+"""
+
+
 # --- Dashboard ---
 
 
@@ -2077,6 +2392,20 @@ async def business_documents_regenerate_pdf(doc_id: int) -> Dict[str, Any]:
 
 
 @business_mcp.tool(
+    name="documents_send",
+    description="Send a document (Honorarnote/Invoice) to client via email with PDF attachment. Optional: recipient_email override (otherwise uses client email). Updates status to 'sent'.",
+)
+async def business_documents_send(
+    doc_id: int,
+    recipient_email: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {}
+    if recipient_email:
+        body["recipient_email"] = recipient_email
+    return await call_business_api("POST", f"/api/v1/documents/{doc_id}/send", json_body=body)
+
+
+@business_mcp.tool(
     name="documents_cancel",
     description="Cancel a document (status → cancelled).",
 )
@@ -2165,6 +2494,50 @@ comm_mcp = FastMCP(
     auth=None,
     log_level="INFO",
 )
+
+
+@comm_mcp.resource(
+    uri="docs://comm/guide",
+    name="Comm API Guide",
+    description="Read this first! Guide for the Communication API: email, Telegram, interventions.",
+)
+async def comm_guide() -> str:
+    return """# Comm API — AI Quick Reference
+
+## Overview
+Unified communication service for sending emails and Telegram messages.
+Used by Business API for document delivery, and directly for notifications.
+
+## Tools
+
+### Sending Messages
+- send_email(to, subject, body, source, template, template_data) — Send email
+- send_telegram(message, chat_id) — Send Telegram message
+- send_message(channel, to, subject, body, source) — Unified send (email or telegram)
+- notify_human(message) — Quick Telegram notification to admin
+
+### Interactive
+- ask_human(question, options, timeout_seconds) — Ask admin via Telegram, wait for response
+
+### Info
+- list_sources() — Available email/telegram source identities
+- message_history(channel, source, limit) — Sent message log
+- service_health() — Health check
+
+## Email Templates
+Available templates (pass as 'template' param):
+- honorarnote_send — Honorarnote delivery email
+- invoice_send — Invoice delivery email
+- payment_reminder — Payment reminder
+
+## Sources
+- "arkturian" — Default: alex@arkturian.com
+
+## Tips
+- notify_human() is fire-and-forget, good for status updates
+- ask_human() blocks until response or timeout (default 5min)
+- For document emails, use Business API documents_send() instead of send_email directly
+"""
 
 
 # --- Unified Send ---
@@ -2409,6 +2782,7 @@ _oneal_storage_stack = AsyncExitStack()
 _artrack_stack = AsyncExitStack()
 _codepilot_stack = AsyncExitStack()
 _content_stack = AsyncExitStack()
+_tree_stack = AsyncExitStack()
 _ai_stack = AsyncExitStack()
 _tarot_stack = AsyncExitStack()
 _business_stack = AsyncExitStack()
@@ -2434,6 +2808,9 @@ async def startup() -> None:
 
     await _content_stack.enter_async_context(content_mcp.session_manager.run())
     await content_app.router.startup()
+
+    await _tree_stack.enter_async_context(tree_mcp.session_manager.run())
+    await tree_app.router.startup()
 
     await _ai_stack.enter_async_context(ai_mcp.session_manager.run())
     await ai_app.router.startup()
@@ -2462,6 +2839,9 @@ async def shutdown() -> None:
     await ai_app.router.shutdown()
     await _ai_stack.aclose()
 
+    await tree_app.router.shutdown()
+    await _tree_stack.aclose()
+
     await content_app.router.shutdown()
     await _content_stack.aclose()
 
@@ -2486,7 +2866,7 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.8.0",
+        "version": "2.9.0",
         "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, Content API, Business API, and Tarot",
         "endpoints": {
             "storage": {
@@ -2528,6 +2908,12 @@ async def root() -> Dict[str, Any]:
                 "tools": [tool.name for tool in content_mcp._tool_manager.list_tools()],
                 "upstream": CONTENT_API_BASE,
                 "description": "Content management API for posts, media, annotations, and blocks",
+            },
+            "tree": {
+                "path": TREE_PATH,
+                "tools": [tool.name for tool in tree_mcp._tool_manager.list_tools()],
+                "upstream": TREE_API_BASE,
+                "description": "Collaborative tree editing with node-level CRUD and real-time sync",
             },
             "tarot": {
                 "path": TAROT_PATH,
@@ -2585,6 +2971,12 @@ async def health() -> Dict[str, Any]:
     except httpx.HTTPError as exc:
         results["status"] = "degraded"
         results["content_error"] = str(exc)
+
+    try:
+        results["tree"] = await tree_service_health()
+    except httpx.HTTPError as exc:
+        results["status"] = "degraded"
+        results["tree_error"] = str(exc)
 
     if BUSINESS_API_KEY:
         try:
@@ -2650,6 +3042,12 @@ async def well_known(request: Request) -> JSONResponse:
                     "version": "1.0.0",
                     "description": "Content management for posts, media, annotations, and blocks",
                     "url": f"{base_url}{CONTENT_PATH}/",
+                },
+                "tree": {
+                    "name": "tree-api",
+                    "version": "1.0.0",
+                    "description": "Collaborative tree editing with node-level CRUD",
+                    "url": f"{base_url}{TREE_PATH}/",
                 },
                 "tarot": {
                     "name": "tarot-api",
