@@ -1834,7 +1834,10 @@ async def tree_projects_delete(project_id: int) -> Any:
     description="""Get the full tree for a project as nested JSON.
 
     Returns recursive structure:
-    {id, name, description, start_date, duration_days, budget, actual_cost, metadata, children: [...]}
+    {id, name, description, start_date, duration_days, budget, actual_cost, effort_pt, computed_effort_pt, metadata, children: [...]}
+
+    effort_pt: person-days stored on leaf nodes.
+    computed_effort_pt: auto-aggregated sum of children's effort (on parent nodes).
 
     Use this for initial load or overview. For large trees, prefer node-level operations.
     """,
@@ -1874,7 +1877,7 @@ async def tree_export(project_id: int) -> Any:
 
     Required: project_id, parent_id, name.
     Optional: description, start_date (YYYY-MM-DD), duration_days (float, e.g. 3.5),
-              budget (decimal), actual_cost (decimal), metadata (dict).
+              budget (decimal), actual_cost (decimal), effort_pt (float, person-days), metadata (dict).
 
     Returns the created node with its ID.
     """,
@@ -1888,6 +1891,7 @@ async def tree_nodes_create(
     duration_days: Optional[float] = None,
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
+    effort_pt: Optional[float] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
     body = {"parent_id": parent_id, "name": name}
@@ -1897,6 +1901,7 @@ async def tree_nodes_create(
         duration_days=duration_days,
         budget=budget,
         actual_cost=actual_cost,
+        effort_pt=effort_pt,
         metadata=metadata,
     ))
     return await call_tree_api("POST", f"/api/v1/projects/{project_id}/nodes", json_body=body)
@@ -1915,7 +1920,7 @@ async def tree_nodes_get(node_id: int) -> Any:
     description="""Update a node. Only provided fields are changed.
 
     Optional: name, description, start_date (YYYY-MM-DD), duration_days (float, e.g. 3.5),
-              budget (decimal), actual_cost (decimal), metadata (dict).
+              budget (decimal), actual_cost (decimal), effort_pt (float, person-days), metadata (dict).
     """,
 )
 async def tree_nodes_update(
@@ -1926,6 +1931,7 @@ async def tree_nodes_update(
     duration_days: Optional[float] = None,
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
+    effort_pt: Optional[float] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
     body = _clean_params(
@@ -1935,6 +1941,7 @@ async def tree_nodes_update(
         duration_days=duration_days,
         budget=budget,
         actual_cost=actual_cost,
+        effort_pt=effort_pt,
         metadata=metadata,
     )
     return await call_tree_api("PATCH", f"/api/v1/nodes/{node_id}", json_body=body)
