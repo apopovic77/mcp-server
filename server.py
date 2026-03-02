@@ -1734,7 +1734,7 @@ async def tree_projects_delete(project_id: int) -> Any:
     description="""Get the full tree for a project as nested JSON.
 
     Returns recursive structure:
-    {id, name, description, start_date, end_date, budget, actual_cost, metadata, children: [...]}
+    {id, name, description, start_date, duration_days, budget, actual_cost, metadata, children: [...]}
 
     Use this for initial load or overview. For large trees, prefer node-level operations.
     """,
@@ -1773,7 +1773,7 @@ async def tree_export(project_id: int) -> Any:
     description="""Create a new node in a project.
 
     Required: project_id, parent_id, name.
-    Optional: description, start_date (YYYY-MM-DD), end_date (YYYY-MM-DD),
+    Optional: description, start_date (YYYY-MM-DD), duration_days (float, e.g. 3.5),
               budget (decimal), actual_cost (decimal), metadata (dict).
 
     Returns the created node with its ID.
@@ -1785,7 +1785,7 @@ async def tree_nodes_create(
     name: str,
     description: Optional[str] = None,
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
+    duration_days: Optional[float] = None,
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -1794,7 +1794,7 @@ async def tree_nodes_create(
     body.update(_clean_params(
         description=description,
         start_date=start_date,
-        end_date=end_date,
+        duration_days=duration_days,
         budget=budget,
         actual_cost=actual_cost,
         metadata=metadata,
@@ -1814,7 +1814,7 @@ async def tree_nodes_get(node_id: int) -> Any:
     name="nodes_update",
     description="""Update a node. Only provided fields are changed.
 
-    Optional: name, description, start_date (YYYY-MM-DD), end_date (YYYY-MM-DD),
+    Optional: name, description, start_date (YYYY-MM-DD), duration_days (float, e.g. 3.5),
               budget (decimal), actual_cost (decimal), metadata (dict).
     """,
 )
@@ -1823,7 +1823,7 @@ async def tree_nodes_update(
     name: Optional[str] = None,
     description: Optional[str] = None,
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
+    duration_days: Optional[float] = None,
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -1832,7 +1832,7 @@ async def tree_nodes_update(
         name=name,
         description=description,
         start_date=start_date,
-        end_date=end_date,
+        duration_days=duration_days,
         budget=budget,
         actual_cost=actual_cost,
         metadata=metadata,
