@@ -1716,8 +1716,27 @@ depth of children. Supports project management fields on every node.
 | effort_pt | float | Effort in person-days (Personentage) |
 | budget | float | Planned budget (decimal) |
 | actual_cost | float | Actual cost (decimal) |
+| budget_cap | float | Top-down budget constraint (max budget for subtree) |
+| effort_cap | float | Top-down effort constraint (max effort PT for subtree) |
+| capacity | float | Team capacity in FTE |
+| weight | float | Relative weight for proportional allocation (default: 1) |
+| timebox_start | string | Timebox start date (YYYY-MM-DD) |
+| timebox_end | string | Timebox end date (YYYY-MM-DD) |
 | metadata | dict | Arbitrary JSON key-value pairs |
 | children | list | Nested child nodes (in tree responses) |
+
+### Computed Fields (read-only, calculated by backend)
+| Field | Type | Description |
+|-------|------|-------------|
+| computed_effort_pt | float | Sum of children's effort_pt (bottom-up) |
+| computed_budget | float | Sum of children's budgets (bottom-up) |
+| computed_cost | float | Sum of children's actual_cost (bottom-up) |
+| computed_start | string | Earliest child start_date (bottom-up) |
+| computed_end | string | Latest child end_date (bottom-up) |
+| allocated_effort | float | Effort allocated from parent's effort_cap by weight |
+| allocated_budget | float | Budget allocated from parent's effort_cap by weight |
+| delta_effort | float | computed_effort_pt - effort_cap (positive = over) |
+| delta_budget | float | computed_budget - budget_cap (positive = over) |
 
 ### PM Fields — How They Work
 - **effort_pt** is the primary planning metric (person-days of work)
@@ -1725,6 +1744,25 @@ depth of children. Supports project management fields on every node.
 - **start_date** is set on AP/phase level for timeline planning
 - Budget vs actual_cost: progress ratio = actual_cost / budget
 - These fields are optional — nodes without them still work fine
+
+### Top-Down Planning (Bidirectional)
+The tree supports **bidirectional planning**: bottom-up aggregation AND top-down allocation.
+
+**Bottom-up** (automatic): Parent nodes aggregate effort, budget, cost, dates from children.
+
+**Top-down** (manual constraints): Set budget_cap/effort_cap on a parent to define limits.
+The system distributes the cap proportionally to children based on their **weight** field.
+- Formula: `allocated = parent_cap * (child.weight / sum_of_all_weights)`
+- Default weight is 1 (equal distribution)
+- **delta** shows over/undershoot: positive delta = constraint exceeded
+
+**Example workflow:**
+```
+1. Set effort_cap=100 on a phase node with 3 children
+2. Set weight=2 on child A, weight=1 on B and C (default)
+3. Result: A gets allocated_effort=50, B and C get 25 each
+4. If A has computed_effort_pt=60, delta_effort=+10 (over by 10 PT)
+```
 
 ## Key Workflows
 
@@ -1742,6 +1780,15 @@ depth of children. Supports project management fields on every node.
 1. tree_outline(project_id)                  → browse the tree, find node IDs
 2. nodes_update(node_id, start_date="2026-04-01", effort_pt=14.5,
      budget=5000, actual_cost=1200)
+```
+
+### 2b. Set Top-Down Constraints
+```
+1. tree_outline(project_id)                  → find the parent node
+2. nodes_update(node_id, budget_cap=50000, effort_cap=100)
+3. Optionally set weights on children:
+   nodes_update(child_id, weight=2)          → gets 2x share
+4. tree_compact(project_id)                  → verify allocated_* and delta_* fields
 ```
 
 ### 3. Import a Complete Tree (JSON)
@@ -1780,9 +1827,11 @@ tree_export(project_id)   → clean JSON without internal IDs
 - budget/actual_cost have no currency — up to the user to define
 
 ## Frontend
-The tree is visualized at mindmap.arkturian.com with 10 views:
+The tree is visualized at tree.arkturian.com with 10 views:
 MindMap, TreeView, TidyTree, Sunburst, Radial, Icicle, Treemap, CirclePack, Force, Gantt.
 The Gantt view shows timeline bars based on start_date + effort_pt.
+Tooltips show constraint caps with delta indicators (red=over, green=ok).
+The EditNodeDialog has a "Constraints" section for budget_cap, effort_cap, weight, capacity, timebox.
 """
 
 
@@ -1852,7 +1901,9 @@ async def tree_get(project_id: int) -> Any:
     name="tree_compact",
     description="""Get a compact tree (no descriptions, no metadata).
 
-    Returns nested JSON with only: id, name, start_date, end_date, effort_pt, computed_effort_pt, budget, actual_cost, children.
+    Returns nested JSON with only: id, name, PM fields (effort, budget, cost, dates),
+    constraint fields (budget_cap, effort_cap, weight, capacity, timebox),
+    and computed fields (computed_effort_pt, computed_budget, delta_effort, delta_budget, allocated_*).
     ~80% smaller than tree_get. Use this when you need structure + PM numbers but not full details.
     For full node details, use nodes_get(node_id) on specific nodes.
     """,
@@ -1862,7 +1913,10 @@ async def tree_compact(project_id: int) -> Any:
 
     def strip(node: dict) -> dict:
         compact = {"id": node["id"], "name": node["name"]}
-        for key in ("start_date", "end_date", "effort_pt", "computed_effort_pt", "budget", "actual_cost"):
+        for key in ("start_date", "end_date", "effort_pt", "computed_effort_pt", "budget", "actual_cost",
+                     "budget_cap", "effort_cap", "capacity", "weight", "timebox_start", "timebox_end",
+                     "computed_budget", "computed_cost", "computed_start", "computed_end",
+                     "allocated_effort", "allocated_budget", "delta_effort", "delta_budget"):
             if node.get(key) is not None:
                 compact[key] = node[key]
         children = node.get("children", [])
@@ -1897,7 +1951,11 @@ async def tree_outline(project_id: int) -> Any:
         tags: list[str] = [f"id={node['id']}"]
         for key, label in [("start_date", "start"), ("end_date", "end"),
                            ("effort_pt", "effort"), ("computed_effort_pt", "Σeffort"),
-                           ("budget", "budget"), ("actual_cost", "cost")]:
+                           ("budget", "budget"), ("actual_cost", "cost"),
+                           ("budget_cap", "cap-budget"), ("effort_cap", "cap-effort"),
+                           ("weight", "weight"), ("capacity", "capacity"),
+                           ("delta_effort", "Δeffort"), ("delta_budget", "Δbudget"),
+                           ("allocated_effort", "alloc-effort"), ("allocated_budget", "alloc-budget")]:
             val = node.get(key)
             if val is not None:
                 tags.append(f"{label}={val}")
@@ -1939,8 +1997,11 @@ async def tree_export(project_id: int) -> Any:
     description="""Create a new node in a project.
 
     Required: project_id, parent_id, name.
-    Optional: description, start_date (YYYY-MM-DD),
-              budget (decimal), actual_cost (decimal), effort_pt (float, person-days), metadata (dict).
+    Optional: description, start_date (YYYY-MM-DD), end_date (YYYY-MM-DD),
+              budget (decimal), actual_cost (decimal), effort_pt (float, person-days),
+              budget_cap (float), effort_cap (float), capacity (float, FTE),
+              weight (float), timebox_start (YYYY-MM-DD), timebox_end (YYYY-MM-DD),
+              metadata (dict).
 
     Returns the created node with its ID.
     """,
@@ -1955,6 +2016,12 @@ async def tree_nodes_create(
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
     effort_pt: Optional[float] = None,
+    budget_cap: Optional[float] = None,
+    effort_cap: Optional[float] = None,
+    capacity: Optional[float] = None,
+    weight: Optional[float] = None,
+    timebox_start: Optional[str] = None,
+    timebox_end: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
     body = {"parent_id": parent_id, "name": name}
@@ -1965,6 +2032,12 @@ async def tree_nodes_create(
         budget=budget,
         actual_cost=actual_cost,
         effort_pt=effort_pt,
+        budget_cap=budget_cap,
+        effort_cap=effort_cap,
+        capacity=capacity,
+        weight=weight,
+        timebox_start=timebox_start,
+        timebox_end=timebox_end,
         metadata=metadata,
     ))
     return await call_tree_api("POST", f"/api/v1/projects/{project_id}/nodes", json_body=body)
@@ -1982,8 +2055,11 @@ async def tree_nodes_get(node_id: int) -> Any:
     name="nodes_update",
     description="""Update a node. Only provided fields are changed.
 
-    Optional: name, description, start_date (YYYY-MM-DD),
-              budget (decimal), actual_cost (decimal), effort_pt (float, person-days), metadata (dict).
+    Optional: name, description, start_date (YYYY-MM-DD), end_date (YYYY-MM-DD),
+              budget (decimal), actual_cost (decimal), effort_pt (float, person-days),
+              budget_cap (float), effort_cap (float), capacity (float, FTE),
+              weight (float), timebox_start (YYYY-MM-DD), timebox_end (YYYY-MM-DD),
+              metadata (dict).
     """,
 )
 async def tree_nodes_update(
@@ -1995,6 +2071,12 @@ async def tree_nodes_update(
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
     effort_pt: Optional[float] = None,
+    budget_cap: Optional[float] = None,
+    effort_cap: Optional[float] = None,
+    capacity: Optional[float] = None,
+    weight: Optional[float] = None,
+    timebox_start: Optional[str] = None,
+    timebox_end: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
     body = _clean_params(
@@ -2005,6 +2087,12 @@ async def tree_nodes_update(
         budget=budget,
         actual_cost=actual_cost,
         effort_pt=effort_pt,
+        budget_cap=budget_cap,
+        effort_cap=effort_cap,
+        capacity=capacity,
+        weight=weight,
+        timebox_start=timebox_start,
+        timebox_end=timebox_end,
         metadata_json=metadata,
     )
     return await call_tree_api("PATCH", f"/api/v1/nodes/{node_id}", json_body=body)
