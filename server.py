@@ -1999,7 +1999,7 @@ async def tree_nodes_update(
         budget=budget,
         actual_cost=actual_cost,
         effort_pt=effort_pt,
-        metadata=metadata,
+        metadata_json=metadata,
     )
     return await call_tree_api("PATCH", f"/api/v1/nodes/{node_id}", json_body=body)
 
