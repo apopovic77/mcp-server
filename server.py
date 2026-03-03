@@ -1712,6 +1712,7 @@ depth of children. Supports project management fields on every node.
 | name | string | **Required** — node title |
 | description | string | Free text, supports markdown |
 | start_date | string | ISO date (YYYY-MM-DD), e.g. "2026-04-01" |
+| end_date | string | ISO date (YYYY-MM-DD), fixed end date (e.g. project deadline) |
 | effort_pt | float | Effort in person-days (Personentage) |
 | budget | float | Planned budget (decimal) |
 | actual_cost | float | Actual cost (decimal) |
@@ -1849,9 +1850,9 @@ async def tree_get(project_id: int) -> Any:
 
 @tree_mcp.tool(
     name="tree_compact",
-    description="""Get a compact tree (no descriptions, no metadata, no dates).
+    description="""Get a compact tree (no descriptions, no metadata).
 
-    Returns nested JSON with only: id, name, effort_pt, computed_effort_pt, budget, actual_cost, children.
+    Returns nested JSON with only: id, name, start_date, end_date, effort_pt, computed_effort_pt, budget, actual_cost, children.
     ~80% smaller than tree_get. Use this when you need structure + PM numbers but not full details.
     For full node details, use nodes_get(node_id) on specific nodes.
     """,
@@ -1861,7 +1862,7 @@ async def tree_compact(project_id: int) -> Any:
 
     def strip(node: dict) -> dict:
         compact = {"id": node["id"], "name": node["name"]}
-        for key in ("effort_pt", "computed_effort_pt", "budget", "actual_cost"):
+        for key in ("start_date", "end_date", "effort_pt", "computed_effort_pt", "budget", "actual_cost"):
             if node.get(key) is not None:
                 compact[key] = node[key]
         children = node.get("children", [])
@@ -1894,7 +1895,8 @@ async def tree_outline(project_id: int) -> Any:
     def walk(node: dict, depth: int = 0) -> None:
         indent = "  " * depth
         tags: list[str] = [f"id={node['id']}"]
-        for key, label in [("effort_pt", "effort"), ("computed_effort_pt", "Σeffort"),
+        for key, label in [("start_date", "start"), ("end_date", "end"),
+                           ("effort_pt", "effort"), ("computed_effort_pt", "Σeffort"),
                            ("budget", "budget"), ("actual_cost", "cost")]:
             val = node.get(key)
             if val is not None:
@@ -1949,6 +1951,7 @@ async def tree_nodes_create(
     name: str,
     description: Optional[str] = None,
     start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
     effort_pt: Optional[float] = None,
@@ -1958,6 +1961,7 @@ async def tree_nodes_create(
     body.update(_clean_params(
         description=description,
         start_date=start_date,
+        end_date=end_date,
         budget=budget,
         actual_cost=actual_cost,
         effort_pt=effort_pt,
@@ -1987,6 +1991,7 @@ async def tree_nodes_update(
     name: Optional[str] = None,
     description: Optional[str] = None,
     start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
     effort_pt: Optional[float] = None,
@@ -1996,6 +2001,7 @@ async def tree_nodes_update(
         name=name,
         description=description,
         start_date=start_date,
+        end_date=end_date,
         budget=budget,
         actual_cost=actual_cost,
         effort_pt=effort_pt,
