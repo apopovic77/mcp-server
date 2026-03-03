@@ -1712,18 +1712,18 @@ depth of children. Supports project management fields on every node.
 | name | string | **Required** — node title |
 | description | string | Free text, supports markdown |
 | start_date | string | ISO date (YYYY-MM-DD), e.g. "2026-04-01" |
-| duration_days | float | Duration in decimal days, e.g. 3.5 = 3.5 Tage |
+| effort_pt | float | Effort in person-days (Personentage) |
 | budget | float | Planned budget (decimal) |
 | actual_cost | float | Actual cost (decimal) |
 | metadata | dict | Arbitrary JSON key-value pairs |
 | children | list | Nested child nodes (in tree responses) |
 
 ### PM Fields — How They Work
-- **start_date + duration_days** define the time window (NOT start + end date!)
-- End date is computed: `end = start + duration_days`
-- Duration is independent of start date — "task takes 3.5 days" regardless of when
+- **effort_pt** is the primary planning metric (person-days of work)
+- **computed_effort_pt** is auto-aggregated from children on parent nodes
+- **start_date** is set on AP/phase level for timeline planning
 - Budget vs actual_cost: progress ratio = actual_cost / budget
-- These fields are optional — nodes without dates still work fine
+- These fields are optional — nodes without them still work fine
 
 ## Key Workflows
 
@@ -1733,13 +1733,13 @@ depth of children. Supports project management fields on every node.
 2. tree_get(project_id)                      → see the root node
 3. nodes_create(project_id, parent_id=root_id, name="Phase 1")
 4. nodes_create(project_id, parent_id=phase1_id, name="Task 1.1",
-     start_date="2026-04-01", duration_days=5, budget=2000)
+     start_date="2026-04-01", effort_pt=5, budget=2000)
 ```
 
 ### 2. Assign PM Data to Existing Nodes
 ```
 1. tree_get(project_id)                      → browse the tree, find node IDs
-2. nodes_update(node_id, start_date="2026-04-01", duration_days=14.5,
+2. nodes_update(node_id, start_date="2026-04-01", effort_pt=14.5,
      budget=5000, actual_cost=1200)
 ```
 
@@ -1748,11 +1748,11 @@ depth of children. Supports project management fields on every node.
 tree_import(name="Project X", tree={
   "name": "Root",
   "children": [
-    {"name": "Phase 1", "start_date": "2026-04-01", "duration_days": 30, "children": [
-      {"name": "Task 1.1", "duration_days": 5, "budget": 1000},
-      {"name": "Task 1.2", "duration_days": 10, "budget": 2000}
+    {"name": "Phase 1", "start_date": "2026-04-01", "effort_pt": 30, "children": [
+      {"name": "Task 1.1", "effort_pt": 5, "budget": 1000},
+      {"name": "Task 1.2", "effort_pt": 10, "budget": 2000}
     ]},
-    {"name": "Phase 2", "start_date": "2026-05-01", "duration_days": 20}
+    {"name": "Phase 2", "start_date": "2026-05-01", "effort_pt": 20}
   ]
 })
 ```
@@ -1774,13 +1774,13 @@ tree_export(project_id)   → clean JSON without internal IDs
 - nodes_move can move across branches (reparent)
 - Deleting a node deletes ALL children (cascade)
 - Cannot delete the root node — delete the project instead
-- duration_days supports decimals: 0.5 = half day, 3.5 = 3.5 days
+- effort_pt supports decimals: 0.5 = half day, 3.5 = 3.5 person-days
 - budget/actual_cost have no currency — up to the user to define
 
 ## Frontend
 The tree is visualized at mindmap.arkturian.com with 10 views:
 MindMap, TreeView, TidyTree, Sunburst, Radial, Icicle, Treemap, CirclePack, Force, Gantt.
-The Gantt view shows timeline bars based on start_date + duration_days.
+The Gantt view shows timeline bars based on start_date + effort_pt.
 """
 
 
@@ -1834,7 +1834,7 @@ async def tree_projects_delete(project_id: int) -> Any:
     description="""Get the full tree for a project as nested JSON.
 
     Returns recursive structure:
-    {id, name, description, start_date, duration_days, budget, actual_cost, effort_pt, computed_effort_pt, metadata, children: [...]}
+    {id, name, description, start_date, budget, actual_cost, effort_pt, computed_effort_pt, metadata, children: [...]}
 
     effort_pt: person-days stored on leaf nodes.
     computed_effort_pt: auto-aggregated sum of children's effort (on parent nodes).
@@ -1876,7 +1876,7 @@ async def tree_export(project_id: int) -> Any:
     description="""Create a new node in a project.
 
     Required: project_id, parent_id, name.
-    Optional: description, start_date (YYYY-MM-DD), duration_days (float, e.g. 3.5),
+    Optional: description, start_date (YYYY-MM-DD),
               budget (decimal), actual_cost (decimal), effort_pt (float, person-days), metadata (dict).
 
     Returns the created node with its ID.
@@ -1888,7 +1888,6 @@ async def tree_nodes_create(
     name: str,
     description: Optional[str] = None,
     start_date: Optional[str] = None,
-    duration_days: Optional[float] = None,
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
     effort_pt: Optional[float] = None,
@@ -1898,7 +1897,6 @@ async def tree_nodes_create(
     body.update(_clean_params(
         description=description,
         start_date=start_date,
-        duration_days=duration_days,
         budget=budget,
         actual_cost=actual_cost,
         effort_pt=effort_pt,
@@ -1919,7 +1917,7 @@ async def tree_nodes_get(node_id: int) -> Any:
     name="nodes_update",
     description="""Update a node. Only provided fields are changed.
 
-    Optional: name, description, start_date (YYYY-MM-DD), duration_days (float, e.g. 3.5),
+    Optional: name, description, start_date (YYYY-MM-DD),
               budget (decimal), actual_cost (decimal), effort_pt (float, person-days), metadata (dict).
     """,
 )
@@ -1928,7 +1926,6 @@ async def tree_nodes_update(
     name: Optional[str] = None,
     description: Optional[str] = None,
     start_date: Optional[str] = None,
-    duration_days: Optional[float] = None,
     budget: Optional[float] = None,
     actual_cost: Optional[float] = None,
     effort_pt: Optional[float] = None,
@@ -1938,7 +1935,6 @@ async def tree_nodes_update(
         name=name,
         description=description,
         start_date=start_date,
-        duration_days=duration_days,
         budget=budget,
         actual_cost=actual_cost,
         effort_pt=effort_pt,
