@@ -1826,12 +1826,60 @@ tree_export(project_id)   → clean JSON without internal IDs
 - effort_pt supports decimals: 0.5 = half day, 3.5 = 3.5 person-days
 - budget/actual_cost have no currency — up to the user to define
 
+## Persons & Assignments
+
+### Person
+| Field | Type | Description |
+|-------|------|-------------|
+| id | int | Auto-generated |
+| project_id | int | Belongs to project |
+| name | string | Person name |
+| email | string | Optional email |
+| hourly_rate | float | Hourly rate (€/h) |
+| color | string | Color hex code (e.g. "#4CAF50") |
+
+### Assignment
+| Field | Type | Description |
+|-------|------|-------------|
+| id | int | Auto-generated |
+| node_id | int | Assigned to this node |
+| person_id | int | The person |
+| person_name | string | Person name (joined) |
+| hours | float | Optional planned hours |
+| role | string | Optional role description |
+| color | string | Person color (joined) |
+
+### Person Workflows
+
+**Create persons for a project:**
+```
+1. persons_create(project_id, name="Alex", hourly_rate=85, color="#4CAF50")
+2. persons_create(project_id, name="Maria", hourly_rate=95, color="#2196F3")
+3. persons_list(project_id)   → see all persons
+```
+
+**Assign persons to tasks:**
+```
+1. assign_person(node_id, person_id=1)              → assign Alex to task
+2. assign_person(node_id, person_id=2, hours=40)    → assign Maria with 40h
+3. tree_outline(project_id)                          → shows person= tag on nodes
+```
+
+**Remove assignment:**
+```
+unassign_person(assignment_id=1, project_id=3)
+```
+
+Assignments appear in `tree_get` and `tree_outline` as an `assignments` array on each node.
+The frontend shows person badges next to nodes (colored pill). Double-click to select a person.
+
 ## Frontend
 The tree is visualized at tree.arkturian.com with 10 views:
 MindMap, TreeView, TidyTree, Sunburst, Radial, Icicle, Treemap, CirclePack, Force, Gantt.
 The Gantt view shows timeline bars based on start_date + effort_pt.
 Tooltips show constraint caps with delta indicators (red=over, green=ok).
 The EditNodeDialog has a "Constraints" section for budget_cap, effort_cap, weight, capacity, timebox.
+The "Person" toggle in toolbar shows person badges on nodes. "Persons" button opens the persons panel.
 """
 
 
@@ -1959,6 +2007,11 @@ async def tree_outline(project_id: int) -> Any:
             val = node.get(key)
             if val is not None:
                 tags.append(f"{label}={val}")
+        # Show assigned persons
+        assignments = node.get("assignments", [])
+        if assignments:
+            names = ", ".join(a["person_name"] for a in assignments)
+            tags.append(f"person={names}")
         lines.append(f"{indent}{node['name']} ({', '.join(tags)})")
         for child in node.get("children", []):
             walk(child, depth + 1)
@@ -2119,6 +2172,88 @@ async def tree_nodes_delete(node_id: int) -> Any:
 )
 async def tree_nodes_move(node_id: int, parent_id: int, position: int) -> Any:
     return await call_tree_api("PATCH", f"/api/v1/nodes/{node_id}/move", json_body={"parent_id": parent_id, "position": position})
+
+
+# --- Persons ---
+
+@tree_mcp.tool(
+    name="persons_list",
+    description="List all persons for a project. Returns id, name, email, hourly_rate, color.",
+)
+async def tree_persons_list(project_id: int) -> Any:
+    return await call_tree_api("GET", f"/api/v1/projects/{project_id}/persons")
+
+
+@tree_mcp.tool(
+    name="persons_create",
+    description="Create a person in a project. Required: name. Optional: email, hourly_rate, color.",
+)
+async def tree_persons_create(
+    project_id: int,
+    name: str,
+    email: Optional[str] = None,
+    hourly_rate: Optional[float] = None,
+    color: Optional[str] = None,
+) -> Any:
+    body = {"name": name}
+    if email is not None:
+        body["email"] = email
+    if hourly_rate is not None:
+        body["hourly_rate"] = hourly_rate
+    if color is not None:
+        body["color"] = color
+    return await call_tree_api("POST", f"/api/v1/projects/{project_id}/persons", json_body=body)
+
+
+@tree_mcp.tool(
+    name="persons_update",
+    description="Update a person. Pass only fields to change: name, email, hourly_rate, color.",
+)
+async def tree_persons_update(
+    person_id: int,
+    name: Optional[str] = None,
+    email: Optional[str] = None,
+    hourly_rate: Optional[float] = None,
+    color: Optional[str] = None,
+) -> Any:
+    body = _clean_params(name=name, email=email, hourly_rate=hourly_rate, color=color)
+    return await call_tree_api("PATCH", f"/api/v1/persons/{person_id}", json_body=body)
+
+
+@tree_mcp.tool(
+    name="persons_delete",
+    description="Delete a person (cascade deletes all their assignments).",
+)
+async def tree_persons_delete(person_id: int) -> Any:
+    return await call_tree_api("DELETE", f"/api/v1/persons/{person_id}")
+
+
+# --- Assignments ---
+
+@tree_mcp.tool(
+    name="assign_person",
+    description="Assign a person to a node (task). Optional: hours, role.",
+)
+async def tree_assign_person(
+    node_id: int,
+    person_id: int,
+    hours: Optional[float] = None,
+    role: Optional[str] = None,
+) -> Any:
+    body: Dict[str, Any] = {"person_id": person_id}
+    if hours is not None:
+        body["hours"] = hours
+    if role is not None:
+        body["role"] = role
+    return await call_tree_api("POST", f"/api/v1/nodes/{node_id}/assignments", json_body=body)
+
+
+@tree_mcp.tool(
+    name="unassign_person",
+    description="Remove an assignment by its ID.",
+)
+async def tree_unassign_person(assignment_id: int, project_id: int = 0) -> Any:
+    return await call_tree_api("DELETE", f"/api/v1/assignments/{assignment_id}?project_id={project_id}")
 
 
 @tree_mcp.tool(
