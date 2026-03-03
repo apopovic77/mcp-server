@@ -1730,7 +1730,7 @@ depth of children. Supports project management fields on every node.
 ### 1. Create a Project with WBS
 ```
 1. projects_create(name="My Project")        → get project with root_node_id
-2. tree_get(project_id)                      → see the root node
+2. tree_outline(project_id)                  → see structure + node IDs
 3. nodes_create(project_id, parent_id=root_id, name="Phase 1")
 4. nodes_create(project_id, parent_id=phase1_id, name="Task 1.1",
      start_date="2026-04-01", effort_pt=5, budget=2000)
@@ -1738,7 +1738,7 @@ depth of children. Supports project management fields on every node.
 
 ### 2. Assign PM Data to Existing Nodes
 ```
-1. tree_get(project_id)                      → browse the tree, find node IDs
+1. tree_outline(project_id)                  → browse the tree, find node IDs
 2. nodes_update(node_id, start_date="2026-04-01", effort_pt=14.5,
      budget=5000, actual_cost=1200)
 ```
@@ -1769,7 +1769,8 @@ tree_export(project_id)   → clean JSON without internal IDs
 ```
 
 ## Tips
-- Use tree_get for overview, nodes_get for single node details
+- Use tree_outline for quick overview, tree_compact for structure + numbers, tree_get only when you need descriptions/metadata
+- nodes_get for full single node details (descriptions, metadata, dates)
 - position=0 means first child, position=1 means second, etc.
 - nodes_move can move across branches (reparent)
 - Deleting a node deletes ALL children (cascade)
@@ -1844,6 +1845,66 @@ async def tree_projects_delete(project_id: int) -> Any:
 )
 async def tree_get(project_id: int) -> Any:
     return await call_tree_api("GET", f"/api/v1/projects/{project_id}/tree")
+
+
+@tree_mcp.tool(
+    name="tree_compact",
+    description="""Get a compact tree (no descriptions, no metadata, no dates).
+
+    Returns nested JSON with only: id, name, effort_pt, computed_effort_pt, budget, actual_cost, children.
+    ~80% smaller than tree_get. Use this when you need structure + PM numbers but not full details.
+    For full node details, use nodes_get(node_id) on specific nodes.
+    """,
+)
+async def tree_compact(project_id: int) -> Any:
+    tree = await call_tree_api("GET", f"/api/v1/projects/{project_id}/tree")
+
+    def strip(node: dict) -> dict:
+        compact = {"id": node["id"], "name": node["name"]}
+        for key in ("effort_pt", "computed_effort_pt", "budget", "actual_cost"):
+            if node.get(key) is not None:
+                compact[key] = node[key]
+        children = node.get("children", [])
+        if children:
+            compact["children"] = [strip(c) for c in children]
+        return compact
+
+    return strip(tree)
+
+
+@tree_mcp.tool(
+    name="tree_outline",
+    description="""Get a plain-text outline of the tree structure.
+
+    Returns indented text with node names, IDs, and PM data (if set).
+    Extremely compact (~1-2K tokens even for large trees).
+    Best for quick overview, finding node IDs, and understanding hierarchy.
+
+    Example output:
+      INSECTA Projekt (id=6)
+        EDERA SAFETY (id=7)
+          AP1 — Projektmanagement (id=8, budget=68000)
+            T1.1 — Systemarchitektur (id=9)
+    """,
+)
+async def tree_outline(project_id: int) -> Any:
+    tree = await call_tree_api("GET", f"/api/v1/projects/{project_id}/tree")
+    lines: list[str] = []
+
+    def walk(node: dict, depth: int = 0) -> None:
+        indent = "  " * depth
+        tags: list[str] = [f"id={node['id']}"]
+        for key, label in [("effort_pt", "effort"), ("computed_effort_pt", "Σeffort"),
+                           ("budget", "budget"), ("actual_cost", "cost")]:
+            val = node.get(key)
+            if val is not None:
+                tags.append(f"{label}={val}")
+        lines.append(f"{indent}{node['name']} ({', '.join(tags)})")
+        for child in node.get("children", []):
+            walk(child, depth + 1)
+
+    walk(tree)
+    return "\n".join(lines)
 
 
 @tree_mcp.tool(
