@@ -1664,6 +1664,87 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
 
 
 @content_mcp.tool(
+    name="references_list",
+    description="""List references (bibliography entries) for a post.
+
+    Returns all structured references with: id, ref_number, title, authors, url, publication, year, note, created_at
+    References are ordered by ref_number.
+    """,
+)
+async def content_references_list(post_id: int) -> Dict[str, Any]:
+    return await call_content_api("GET", f"/api/v1/posts/{post_id}/references/")
+
+
+@content_mcp.tool(
+    name="references_create",
+    description="""Add a bibliographic reference to a post.
+
+    Required: ref_number (int, e.g. 1), title (str)
+    Optional: authors (str), url (str), publication (str), year (str), note (str)
+
+    Use [N] in post content to create clickable citation links to ref_number N.
+    """,
+)
+async def content_references_create(
+    post_id: int,
+    ref_number: int,
+    title: str,
+    authors: Optional[str] = None,
+    url: Optional[str] = None,
+    publication: Optional[str] = None,
+    year: Optional[str] = None,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"ref_number": ref_number, "title": title}
+    if authors:
+        body["authors"] = authors
+    if url:
+        body["url"] = url
+    if publication:
+        body["publication"] = publication
+    if year:
+        body["year"] = year
+    if note:
+        body["note"] = note
+    return await call_content_api("POST", f"/api/v1/posts/{post_id}/references/", json_body=body)
+
+
+@content_mcp.tool(
+    name="references_update",
+    description="Update a reference. All fields optional.",
+)
+async def content_references_update(
+    post_id: int,
+    reference_id: int,
+    ref_number: Optional[int] = None,
+    title: Optional[str] = None,
+    authors: Optional[str] = None,
+    url: Optional[str] = None,
+    publication: Optional[str] = None,
+    year: Optional[str] = None,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = _clean_params(
+        ref_number=ref_number,
+        title=title,
+        authors=authors,
+        url=url,
+        publication=publication,
+        year=year,
+        note=note,
+    )
+    return await call_content_api("PATCH", f"/api/v1/posts/{post_id}/references/{reference_id}", json_body=body)
+
+
+@content_mcp.tool(
+    name="references_delete",
+    description="Delete a reference from a post.",
+)
+async def content_references_delete(post_id: int, reference_id: int) -> Dict[str, Any]:
+    return await call_content_api("DELETE", f"/api/v1/posts/{post_id}/references/{reference_id}")
+
+
+@content_mcp.tool(
     name="service_health",
     description="Health check for the Content API.",
 )
@@ -1722,6 +1803,8 @@ depth of children. Supports project management fields on every node.
 | weight | float | Relative weight for proportional allocation (default: 1) |
 | timebox_start | string | Timebox start date (YYYY-MM-DD) |
 | timebox_end | string | Timebox end date (YYYY-MM-DD) |
+| node_type | string | null (=task), "milestone", "deliverable", or "phase" |
+| status | string | null (=open), "open", "reached", "missed", "delayed" |
 | metadata | dict | Arbitrary JSON key-value pairs |
 | children | list | Nested child nodes (in tree responses) |
 
@@ -1814,6 +1897,49 @@ nodes_delete(node_id)                                     → cascade deletes ch
 ### 5. Export for Backup
 ```
 tree_export(project_id)   → clean JSON without internal IDs
+```
+
+## Milestones, Deliverables & Node Types
+
+Nodes have an optional `node_type` field:
+- **null** (default) = regular task/work package
+- **"milestone"** = zero-duration checkpoint (e.g. "Kick-off", "Go-Live")
+- **"deliverable"** = project result/output (e.g. "Report", "Prototype")
+- **"phase"** = grouping container (visual distinction)
+
+Milestones and deliverables also have a `status` field:
+- **null / "open"** = not yet reached
+- **"reached"** = milestone achieved / deliverable completed
+- **"missed"** = deadline passed, not achieved
+- **"delayed"** = behind schedule
+
+**Milestone conventions:**
+- Use `end_date` as the due date (not start_date)
+- Don't set effort_pt or budget on milestones (they're zero-duration)
+- Frontend shows ◆ diamond icon and colored status badge
+- tree_outline shows `type=milestone` and `status=reached` tags
+
+**Deliverable conventions:**
+- No start_date or end_date needed (result, not a time-bounded activity)
+- No effort_pt or budget
+- Frontend shows ▣ icon
+- FFG export: "Art des Elements" = "Deliverable", no dates
+
+**Create a milestone:**
+```
+nodes_create(project_id, parent_id, name="Kick-off Meeting",
+    node_type="milestone", end_date="2026-04-01")
+```
+
+**Create a deliverable:**
+```
+nodes_create(project_id, parent_id, name="Final Report",
+    node_type="deliverable")
+```
+
+**Update status:**
+```
+nodes_update(node_id, status="reached")
 ```
 
 ## Tips
@@ -1997,6 +2123,13 @@ async def tree_outline(project_id: int) -> Any:
     def walk(node: dict, depth: int = 0) -> None:
         indent = "  " * depth
         tags: list[str] = [f"id={node['id']}"]
+        # Node type and status
+        ntype = node.get("node_type")
+        if ntype:
+            tags.append(f"type={ntype}")
+        nstatus = node.get("status")
+        if nstatus:
+            tags.append(f"status={nstatus}")
         for key, label in [("start_date", "start"), ("end_date", "end"),
                            ("effort_pt", "effort"), ("computed_effort_pt", "Σeffort"),
                            ("budget", "budget"), ("actual_cost", "cost"),
@@ -2012,7 +2145,8 @@ async def tree_outline(project_id: int) -> Any:
         if assignments:
             names = ", ".join(a["person_name"] for a in assignments)
             tags.append(f"person={names}")
-        lines.append(f"{indent}{node['name']} ({', '.join(tags)})")
+        icon = "◆ " if ntype == "milestone" else "▣ " if ntype == "deliverable" else ""
+        lines.append(f"{indent}{icon}{node['name']} ({', '.join(tags)})")
         for child in node.get("children", []):
             walk(child, depth + 1)
 
@@ -2054,6 +2188,7 @@ async def tree_export(project_id: int) -> Any:
               budget (decimal), actual_cost (decimal), effort_pt (float, person-days),
               budget_cap (float), effort_cap (float), capacity (float, FTE),
               weight (float), timebox_start (YYYY-MM-DD), timebox_end (YYYY-MM-DD),
+              node_type (null/milestone/deliverable/phase), status (null/open/reached/missed/delayed),
               metadata (dict).
 
     Returns the created node with its ID.
@@ -2075,6 +2210,8 @@ async def tree_nodes_create(
     weight: Optional[float] = None,
     timebox_start: Optional[str] = None,
     timebox_end: Optional[str] = None,
+    node_type: Optional[str] = None,
+    status: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
     body = {"parent_id": parent_id, "name": name}
@@ -2091,6 +2228,8 @@ async def tree_nodes_create(
         weight=weight,
         timebox_start=timebox_start,
         timebox_end=timebox_end,
+        node_type=node_type,
+        status=status,
         metadata=metadata,
     ))
     return await call_tree_api("POST", f"/api/v1/projects/{project_id}/nodes", json_body=body)
@@ -2112,6 +2251,7 @@ async def tree_nodes_get(node_id: int) -> Any:
               budget (decimal), actual_cost (decimal), effort_pt (float, person-days),
               budget_cap (float), effort_cap (float), capacity (float, FTE),
               weight (float), timebox_start (YYYY-MM-DD), timebox_end (YYYY-MM-DD),
+              node_type (null/milestone/deliverable/phase), status (null/open/reached/missed/delayed),
               metadata (dict).
     """,
 )
@@ -2130,6 +2270,8 @@ async def tree_nodes_update(
     weight: Optional[float] = None,
     timebox_start: Optional[str] = None,
     timebox_end: Optional[str] = None,
+    node_type: Optional[str] = None,
+    status: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
     body = _clean_params(
@@ -2146,6 +2288,8 @@ async def tree_nodes_update(
         weight=weight,
         timebox_start=timebox_start,
         timebox_end=timebox_end,
+        node_type=node_type,
+        status=status,
         metadata_json=metadata,
     )
     return await call_tree_api("PATCH", f"/api/v1/nodes/{node_id}", json_body=body)
