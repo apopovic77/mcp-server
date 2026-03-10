@@ -2822,7 +2822,7 @@ async def business_clients_create(
 
 @business_mcp.tool(
     name="clients_update",
-    description="Update an existing client. Pass only the fields you want to change.",
+    description="Update an existing client. Pass only the fields you want to change. Includes CRM fields: lead_status, source, next_followup_at.",
 )
 async def business_clients_update(
     client_id: int,
@@ -2836,14 +2836,97 @@ async def business_clients_update(
     country: Optional[str] = None,
     uid_number: Optional[str] = None,
     notes: Optional[str] = None,
+    lead_status: Optional[str] = None,
+    source: Optional[str] = None,
+    next_followup_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     body = {}
     for k, v in {"name": name, "company": company, "email": email, "phone": phone,
                   "address": address, "zip": zip, "city": city, "country": country,
-                  "uid_number": uid_number, "notes": notes}.items():
+                  "uid_number": uid_number, "notes": notes, "lead_status": lead_status,
+                  "source": source, "next_followup_at": next_followup_at}.items():
         if v is not None:
             body[k] = v
     return await call_business_api("PATCH", f"/api/v1/clients/{client_id}", json_body=body)
+
+
+# --- CRM ---
+
+
+@business_mcp.tool(
+    name="clients_update_status",
+    description="Update a client's lead status. Statuses: lead, prospect, active, inactive, lost.",
+)
+async def business_clients_update_status(
+    client_id: int,
+    lead_status: str,
+) -> Dict[str, Any]:
+    return await call_business_api(
+        "PATCH", f"/api/v1/clients/{client_id}",
+        json_body={"lead_status": lead_status},
+    )
+
+
+@business_mcp.tool(
+    name="clients_log_interaction",
+    description="Log a client interaction (call, email, meeting, note). Auto-updates last_contact_at on the client.",
+)
+async def business_clients_log_interaction(
+    client_id: int,
+    interaction_type: str,
+    subject: str,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"interaction_type": interaction_type, "subject": subject}
+    if description:
+        body["description"] = description
+    return await call_business_api(
+        "POST", f"/api/v1/clients/{client_id}/interactions", json_body=body,
+    )
+
+
+@business_mcp.tool(
+    name="clients_interactions",
+    description="List recent interactions for a client. Returns type, subject, date.",
+)
+async def business_clients_interactions(
+    client_id: int,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    params = _clean_params(limit=limit)
+    return await call_business_api(
+        "GET", f"/api/v1/clients/{client_id}/interactions", params=params,
+    )
+
+
+@business_mcp.tool(
+    name="clients_pipeline",
+    description="CRM pipeline overview: clients grouped by lead status (lead, prospect, active, inactive, lost) with counts.",
+)
+async def business_clients_pipeline() -> Dict[str, Any]:
+    return await call_business_api("GET", "/api/v1/crm/pipeline")
+
+
+@business_mcp.tool(
+    name="clients_followups",
+    description="List clients with overdue or upcoming followups (next 7 days). Returns overdue and upcoming lists.",
+)
+async def business_clients_followups() -> Dict[str, Any]:
+    return await call_business_api("GET", "/api/v1/crm/followups")
+
+
+@business_mcp.tool(
+    name="clients_set_followup",
+    description="Set next followup date for a client. Date format: YYYY-MM-DD.",
+)
+async def business_clients_set_followup(
+    client_id: int,
+    next_followup_at: str,
+) -> Dict[str, Any]:
+    return await call_business_api(
+        "PATCH", f"/api/v1/clients/{client_id}",
+        json_body={"next_followup_at": next_followup_at},
+    )
 
 
 # --- Documents ---
@@ -3069,12 +3152,17 @@ Used by Business API for document delivery, and directly for notifications.
 
 ### Sending Messages
 - send_email(to, subject, body, source, template, template_data) — Send email
-- send_telegram(message, chat_id) — Send Telegram message
+- send_telegram(message, chat_id, to) — Send Telegram message. Use 'to' for name-based sending (e.g. to="sabrina")
 - send_message(channel, to, subject, body, source) — Unified send (email or telegram)
 - notify_human(message) — Quick Telegram notification to admin
 
 ### Interactive
 - ask_human(question, options, timeout_seconds) — Ask admin via Telegram, wait for response
+
+### Contacts
+- contacts_list(limit) — List all auto-registered Telegram contacts
+- contacts_get(contact_id) — Get contact details
+- incoming_messages(sender, chat_id, limit) — List incoming Telegram messages
 
 ### Info
 - list_sources() — Available email/telegram source identities
@@ -3141,15 +3229,19 @@ async def comm_send_email(
     Args:
         message: Message text (Markdown supported)
         chat_id: Optional Telegram chat ID (defaults to admin chat)
+        to: Optional contact name to resolve to chat_id (e.g. "sabrina"). Uses fuzzy matching.
     """,
 )
 async def comm_send_telegram(
     message: str,
     chat_id: Optional[str] = None,
+    to: Optional[str] = None,
 ) -> Dict[str, Any]:
     json_body: Dict[str, Any] = {"message": message}
     if chat_id:
         json_body["chat_id"] = chat_id
+    if to:
+        json_body["to"] = to
     return await call_comm_api("POST", "/api/v1/telegram/send", json_body=json_body)
 
 
@@ -3295,6 +3387,54 @@ async def comm_ask_human(
     except Exception as e:
         logger.error("Failed to ask human: %s", e)
         return {"error": str(e), "response": None}
+
+
+# --- Contacts ---
+
+
+@comm_mcp.tool(
+    name="contacts_list",
+    description="""List all Telegram contacts. Contacts are auto-registered when someone messages the bot.
+
+    Returns: list of contacts with name, username, chat_id, last_seen.
+    """,
+)
+async def comm_contacts_list(
+    limit: int = 100,
+) -> Dict[str, Any]:
+    return await call_comm_api("GET", "/api/v1/contacts", params={"limit": limit})
+
+
+@comm_mcp.tool(
+    name="contacts_get",
+    description="""Get a single contact by ID.
+
+    Returns: contact details including telegram_id, chat_id, display_name, username, notes.
+    """,
+)
+async def comm_contacts_get(
+    contact_id: int,
+) -> Dict[str, Any]:
+    return await call_comm_api("GET", f"/api/v1/contacts/{contact_id}")
+
+
+@comm_mcp.tool(
+    name="incoming_messages",
+    description="""List incoming Telegram messages received by the bot.
+
+    Optional filters:
+    - sender: Filter by sender name (fuzzy match)
+    - chat_id: Filter by chat ID
+    - limit: Max results (default 50)
+    """,
+)
+async def comm_incoming_messages(
+    sender: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    params = _clean_params(sender=sender, chat_id=chat_id, limit=limit)
+    return await call_comm_api("GET", "/api/v1/contacts/incoming", params=params)
 
 
 # --- Info ---
