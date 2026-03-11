@@ -84,6 +84,7 @@ TREE_PATH = "/tree"
 TAROT_PATH = "/tarot"
 BUSINESS_PATH = "/business"
 COMM_PATH = "/comm"
+KNOWLEDGE_PATH = "/knowledge"
 
 # Tools API (for Tarot)
 TOOLS_API_BASE = os.getenv("TOOLS_API_BASE", "https://tools-api.arkturian.com")
@@ -95,6 +96,9 @@ BUSINESS_API_KEY = os.getenv("BUSINESS_API_KEY", "")
 # Comm API
 COMM_API_BASE = os.getenv("COMM_API_BASE", "https://comm-api.arkturian.com")
 COMM_API_KEY = os.getenv("COMM_API_KEY", "")
+
+# Knowledge API
+KNOWLEDGE_API_BASE = os.getenv("KNOWLEDGE_API_BASE", "https://knowledge-api.arkturian.com")
 
 # --------------------------------------------------------------------------- #
 # HTTP helpers
@@ -226,6 +230,23 @@ async def call_tools_api(
     return await _fetch_json(
         method,
         f"{TOOLS_API_BASE}{endpoint}",
+        headers={},
+        params=params,
+        json_body=json_body,
+    )
+
+
+async def call_knowledge_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call Knowledge API (no auth required)."""
+    return await _fetch_json(
+        method,
+        f"{KNOWLEDGE_API_BASE}{endpoint}",
         headers={},
         params=params,
         json_body=json_body,
@@ -2583,6 +2604,202 @@ ai_app = ai_mcp.streamable_http_app()
 app.mount(AI_PATH, ai_app)
 
 # --------------------------------------------------------------------------- #
+# Knowledge MCP – AI-powered knowledge extraction from Storage objects
+# --------------------------------------------------------------------------- #
+
+knowledge_mcp = FastMCP(
+    name="knowledge-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@knowledge_mcp.tool(
+    name="knowledge_query",
+    description="""Query AI-powered knowledge for a storage object.
+
+    Generates or retrieves cached knowledge by asking a question about a storage object.
+    Uses AI vision for images/videos. Results are cached by (storage_id, prompt_hash).
+
+    Parameters:
+    - storage_id: Source storage object ID
+    - prompt: Question about the object (max 4000 chars)
+    - model: AI model (claude, chatgpt, gemini). Default: claude
+    - force_refresh: Force regeneration even if cached. Default: false
+    """,
+)
+async def knowledge_query(
+    storage_id: int,
+    prompt: str,
+    model: str = "claude",
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    return await call_knowledge_api("POST", "/api/v1/knowledge/query", json_body={
+        "storage_id": storage_id,
+        "prompt": prompt,
+        "model": model,
+        "force_refresh": force_refresh,
+    })
+
+
+@knowledge_mcp.tool(
+    name="knowledge_get",
+    description="Get a specific knowledge item by its ID.",
+)
+async def knowledge_get(knowledge_id: int) -> Dict[str, Any]:
+    return await call_knowledge_api("GET", f"/api/v1/knowledge/{knowledge_id}")
+
+
+@knowledge_mcp.tool(
+    name="knowledge_source",
+    description="List all knowledge items generated for a specific source storage object.",
+)
+async def knowledge_source(storage_id: int, limit: int = 50) -> Dict[str, Any]:
+    return await call_knowledge_api("GET", f"/api/v1/knowledge/source/{storage_id}", params={"limit": limit})
+
+
+@knowledge_mcp.tool(
+    name="knowledge_annotated_generate",
+    description="""Generate annotated knowledge for an image/video.
+
+    Analyzes the image with AI vision and creates:
+    - Object title and description
+    - Annotation points with coordinates (x,y normalized 0-1), labels, descriptions
+    - 3D positions for GLB models
+
+    Detail levels: simple (kids), standard (general), detailed (expert)
+
+    Parameters:
+    - storage_id: Source storage object ID (must be image/video)
+    - detail_level: simple, standard, or detailed. Default: standard
+    - max_annotations: Max annotation points (1-10). Default: 6
+    - language: Language for descriptions. Default: de
+    - force_refresh: Force regeneration. Default: false
+    """,
+)
+async def knowledge_annotated_generate(
+    storage_id: int,
+    detail_level: str = "standard",
+    max_annotations: int = 6,
+    language: str = "de",
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    return await call_knowledge_api("POST", "/api/v1/knowledge/annotated", json_body={
+        "storage_id": storage_id,
+        "detail_level": detail_level,
+        "max_annotations": max_annotations,
+        "language": language,
+        "force_refresh": force_refresh,
+    })
+
+
+@knowledge_mcp.tool(
+    name="knowledge_annotated_get",
+    description="Get annotated knowledge by ID. Returns object title, description, and all annotations with coordinates.",
+)
+async def knowledge_annotated_get(knowledge_id: int) -> Dict[str, Any]:
+    return await call_knowledge_api("GET", f"/api/v1/knowledge/annotated/{knowledge_id}")
+
+
+@knowledge_mcp.tool(
+    name="knowledge_annotated_update",
+    description="""Update annotated knowledge content.
+
+    Can update title, description, or annotation points. Audio references are preserved.
+
+    Parameters:
+    - knowledge_id: ID of the annotated knowledge to update
+    - object_title: Updated title (optional)
+    - object_description: Updated description (optional)
+    - annotations: Updated annotation list (optional) - each with id, anchor {x,y}, label, description
+    """,
+)
+async def knowledge_annotated_update(
+    knowledge_id: int,
+    object_title: Optional[str] = None,
+    object_description: Optional[str] = None,
+    annotations: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {}
+    if object_title is not None:
+        body["object_title"] = object_title
+    if object_description is not None:
+        body["object_description"] = object_description
+    if annotations is not None:
+        body["annotations"] = annotations
+    return await call_knowledge_api("PUT", f"/api/v1/knowledge/annotated/{knowledge_id}", json_body=body)
+
+
+@knowledge_mcp.tool(
+    name="knowledge_annotated_audio",
+    description="""Generate audio for annotated knowledge.
+
+    Modes:
+    - all: Object + each annotation separately (best for AR apps)
+    - object: Only the main description
+    - combined: Single audio combining everything
+    - <annotation_id>: Only a specific annotation
+
+    Parameters:
+    - knowledge_id: Annotated knowledge ID
+    - mode: all, object, combined, or specific annotation ID. Default: all
+    - voice: OpenAI voice (alloy, echo, fable, onyx, nova, shimmer). Default: nova
+    - add_music: Add background music. Default: true
+    """,
+)
+async def knowledge_annotated_audio(
+    knowledge_id: int,
+    mode: str = "all",
+    voice: str = "nova",
+    add_music: bool = True,
+) -> Dict[str, Any]:
+    return await call_knowledge_api("POST", f"/api/v1/knowledge/annotated/{knowledge_id}/audio", json_body={
+        "mode": mode,
+        "voice": voice,
+        "add_music": add_music,
+    })
+
+
+@knowledge_mcp.tool(
+    name="knowledge_audio_generate",
+    description="""Generate audio (Hörbuch) from knowledge content.
+
+    Converts knowledge text to audio with TTS, optional background music and SFX.
+
+    Parameters:
+    - knowledge_id: Knowledge storage ID to convert
+    - add_music: Add background music. Default: true
+    - language: Language code. Default: de
+    - narrator_voice: OpenAI voice (alloy, echo, fable, onyx, nova, shimmer). Default: nova
+    """,
+)
+async def knowledge_audio_generate(
+    knowledge_id: int,
+    add_music: bool = True,
+    language: str = "de",
+    narrator_voice: str = "nova",
+) -> Dict[str, Any]:
+    return await call_knowledge_api("POST", "/api/v1/knowledge/audio", json_body={
+        "knowledge_id": knowledge_id,
+        "add_music": add_music,
+        "language": language,
+        "narrator_voice": narrator_voice,
+    })
+
+
+@knowledge_mcp.tool(
+    name="knowledge_service_health",
+    description="Check Knowledge API health status.",
+)
+async def knowledge_service_health() -> Dict[str, Any]:
+    return await call_knowledge_api("GET", "/health")
+
+
+knowledge_app = knowledge_mcp.streamable_http_app()
+app.mount(KNOWLEDGE_PATH, knowledge_app)
+
+# --------------------------------------------------------------------------- #
 # Tarot MCP - Tarot card reading tools
 # --------------------------------------------------------------------------- #
 
@@ -3072,7 +3289,7 @@ async def business_transactions_list(
 
 @business_mcp.tool(
     name="transactions_create",
-    description="Create a transaction. Required: tx_type (income/expense), amount. Optional: category, description, tx_date (YYYY-MM-DD), vat_rate, client_id.",
+    description="Create a transaction. Required: tx_type (income/expense), amount. Optional: category, description, tx_date (YYYY-MM-DD), vat_rate, client_id, receipt_url (URL to receipt image).",
 )
 async def business_transactions_create(
     tx_type: str,
@@ -3082,9 +3299,10 @@ async def business_transactions_create(
     tx_date: Optional[str] = None,
     vat_rate: float = 0.0,
     client_id: Optional[int] = None,
+    receipt_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     body = {"tx_type": tx_type, "amount": amount, "vat_rate": vat_rate}
-    for k, v in {"category": category, "description": description, "tx_date": tx_date, "client_id": client_id}.items():
+    for k, v in {"category": category, "description": description, "tx_date": tx_date, "client_id": client_id, "receipt_url": receipt_url}.items():
         if v is not None:
             body[k] = v
     return await call_business_api("POST", "/api/v1/transactions", json_body=body)
@@ -3484,6 +3702,7 @@ _ai_stack = AsyncExitStack()
 _tarot_stack = AsyncExitStack()
 _business_stack = AsyncExitStack()
 _comm_stack = AsyncExitStack()
+_knowledge_stack = AsyncExitStack()
 
 
 @app.on_event("startup")
@@ -3521,9 +3740,15 @@ async def startup() -> None:
     await _comm_stack.enter_async_context(comm_mcp.session_manager.run())
     await comm_app.router.startup()
 
+    await _knowledge_stack.enter_async_context(knowledge_mcp.session_manager.run())
+    await knowledge_app.router.startup()
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await knowledge_app.router.shutdown()
+    await _knowledge_stack.aclose()
+
     await comm_app.router.shutdown()
     await _comm_stack.aclose()
 
@@ -3563,8 +3788,8 @@ async def root() -> Dict[str, Any]:
     """Human-friendly service descriptor."""
     return {
         "name": "arkturian-mcp",
-        "version": "2.9.0",
-        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, Content API, Business API, and Tarot",
+        "version": "3.0.0",
+        "description": "Arkturian MCP Aggregator with per-tenant isolation, human-in-the-loop, AI generation, Content API, Business API, Knowledge API, and Tarot",
         "endpoints": {
             "storage": {
                 "path": STORAGE_PATH,
@@ -3629,6 +3854,12 @@ async def root() -> Dict[str, Any]:
                 "tools": [tool.name for tool in comm_mcp._tool_manager.list_tools()],
                 "upstream": COMM_API_BASE,
                 "description": "Unified communication: Email, Telegram, Interventions",
+            },
+            "knowledge": {
+                "path": KNOWLEDGE_PATH,
+                "tools": [tool.name for tool in knowledge_mcp._tool_manager.list_tools()],
+                "upstream": KNOWLEDGE_API_BASE,
+                "description": "AI-powered knowledge extraction, annotated knowledge with visual annotations, and audio generation",
             },
         },
     }
@@ -3763,6 +3994,12 @@ async def well_known(request: Request) -> JSONResponse:
                     "version": "1.0.0",
                     "description": "Unified communication: Email, Telegram, Interventions",
                     "url": f"{base_url}{COMM_PATH}/",
+                },
+                "knowledge": {
+                    "name": "knowledge-api",
+                    "version": "1.0.0",
+                    "description": "AI-powered knowledge extraction, annotations, and audio",
+                    "url": f"{base_url}{KNOWLEDGE_PATH}/",
                 },
             }
         }
