@@ -5066,18 +5066,26 @@ async def comm_send_email(
         message: Message text (Markdown supported)
         chat_id: Optional Telegram chat ID (defaults to admin chat)
         to: Optional contact name to resolve to chat_id (e.g. "sabrina"). Uses fuzzy matching.
+        bot: Optional bot identity to send through (e.g. "sabotnig" for the
+            Martin Sabotnig channel via @AgentOSKittBot). When omitted, the
+            recipient contact's preferred_bot is used; otherwise the
+            deployment's default bot. Use this only when you need to override
+            the natural routing — most outbound calls should leave it unset.
     """,
 )
 async def comm_send_telegram(
     message: str,
     chat_id: Optional[str] = None,
     to: Optional[str] = None,
+    bot: Optional[str] = None,
 ) -> Dict[str, Any]:
     json_body: Dict[str, Any] = {"message": message}
     if chat_id:
         json_body["chat_id"] = chat_id
     if to:
         json_body["to"] = to
+    if bot:
+        json_body["bot"] = bot
     return await call_comm_api("POST", "/api/v1/telegram/send", json_body=json_body)
 
 
@@ -5113,6 +5121,7 @@ async def comm_send_telegram_document(
     caption: Optional[str] = None,
     url: Optional[str] = None,
     data_base64: Optional[str] = None,
+    bot: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not url and not data_base64:
         return {"error": "Either url or data_base64 must be provided"}
@@ -5130,6 +5139,8 @@ async def comm_send_telegram_document(
         json_body["url"] = url
     if data_base64:
         json_body["data"] = data_base64
+    if bot:
+        json_body["bot"] = bot
     return await call_comm_api("POST", "/api/v1/telegram/send-document", json_body=json_body)
 
 
@@ -5155,6 +5166,7 @@ async def comm_send_message(
     subject: Optional[str] = None,
     template: Optional[str] = None,
     template_data: Optional[Dict[str, Any]] = None,
+    bot: Optional[str] = None,
 ) -> Dict[str, Any]:
     json_body: Dict[str, Any] = {
         "channel": channel,
@@ -5168,6 +5180,8 @@ async def comm_send_message(
         json_body["template"] = template
     if template_data:
         json_body["template_data"] = template_data
+    if bot:
+        json_body["bot"] = bot
     return await call_comm_api("POST", "/api/v1/send", json_body=json_body)
 
 
@@ -5186,14 +5200,20 @@ async def comm_send_message(
     The message is sent immediately and does not wait for a response.
     """,
 )
-async def comm_notify_human(message: str) -> Dict[str, Any]:
+async def comm_notify_human(
+    message: str,
+    bot: Optional[str] = None,
+) -> Dict[str, Any]:
     if not COMM_API_KEY:
         return {"error": "COMM_API_KEY not configured", "sent": False}
     try:
+        body: Dict[str, Any] = {"message": message}
+        if bot:
+            body["bot"] = bot
         result = await call_comm_api(
             "POST",
             "/api/v1/telegram/interventions/notification",
-            json_body={"message": message},
+            json_body=body,
         )
         return {"sent": result.get("sent", False), "message_id": result.get("message_id")}
     except Exception as e:
@@ -5217,28 +5237,36 @@ async def comm_ask_human(
     question: str,
     options: Optional[List[str]] = None,
     timeout_seconds: int = 300,
+    bot: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not COMM_API_KEY:
         return {"error": "COMM_API_KEY not configured", "response": None}
     try:
+        body: Dict[str, Any]
         if options and len(options) > 0:
+            body = {
+                "message": question,
+                "options": options,
+                "timeout_seconds": timeout_seconds,
+            }
+            if bot:
+                body["bot"] = bot
             create_result = await call_comm_api(
                 "POST",
                 "/api/v1/telegram/interventions/approval",
-                json_body={
-                    "message": question,
-                    "options": options,
-                    "timeout_seconds": timeout_seconds,
-                },
+                json_body=body,
             )
         else:
+            body = {
+                "message": question,
+                "timeout_seconds": timeout_seconds,
+            }
+            if bot:
+                body["bot"] = bot
             create_result = await call_comm_api(
                 "POST",
                 "/api/v1/telegram/interventions/text-input",
-                json_body={
-                    "message": question,
-                    "timeout_seconds": timeout_seconds,
-                },
+                json_body=body,
             )
 
         request_id = create_result.get("id")
