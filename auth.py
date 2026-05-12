@@ -18,6 +18,7 @@ Configuration:
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import time
@@ -32,6 +33,32 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+# ContextVars holding the current caller's identity for the duration of a
+# single MCP request. FastMCP tool functions don't get the Request object
+# directly, but ContextVars propagate through asyncio.copy_context() across
+# every task spawned during the request, so tools can read these to forward
+# the caller's JWT to upstream APIs (content-api, auth-api, etc.).
+#
+# JWTAuthMiddleware sets them; tools read via current_caller_jwt() etc.
+_current_jwt: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_caller_jwt", default=""
+)
+_current_agent_name: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_caller_agent", default=""
+)
+
+
+def current_caller_jwt() -> str:
+    """Return the JWT (raw token string) of the agent that made the
+    current MCP request, or empty string if anonymous/no auth.
+    """
+    return _current_jwt.get()
+
+
+def current_caller_agent_name() -> str:
+    """Return the agent_name claim of the current caller, or empty string."""
+    return _current_agent_name.get()
 
 logger = logging.getLogger("mcp-auth")
 
@@ -235,6 +262,12 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             )
             request.state.agent = agent
 
+            # Stash the raw JWT into ContextVars so tool functions further
+            # downstream can read it for upstream API forwarding. Reset on
+            # response (no token-leak between requests).
+            _jwt_token = _current_jwt.set(token)
+            _name_token = _current_agent_name.set(agent.name)
+
             # Permission check: server-level + tool-level
             mcp_server = _extract_mcp_server_from_path(request.url.path)
             if mcp_server:
@@ -291,7 +324,15 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         except jwt.InvalidTokenError as e:
             return JSONResponse({"error": f"Invalid token: {e}"}, status_code=401)
 
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        finally:
+            # Reset ContextVars after request — prevents JWT bleed between calls
+            try:
+                _current_jwt.reset(_jwt_token)
+                _current_agent_name.reset(_name_token)
+            except (LookupError, NameError):
+                pass
 
 
 # ──────────────────────────────────────────────────────────────
