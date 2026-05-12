@@ -234,6 +234,35 @@ async def _fetch_json(
             raise
 
 
+# ──────────────────────────────────────────────────────────────
+# Caller auth-header forwarding
+# ──────────────────────────────────────────────────────────────
+# JWTAuthMiddleware (auth.py) stashes the caller's raw JWT into a ContextVar
+# at request time. Tool functions don't get the Request object directly, but
+# ContextVars propagate through asyncio.copy_context() across every task
+# spawned during the request, so we can read the caller's JWT here and
+# forward it to upstream APIs. This way content-api etc. see the actual
+# agent identity (with their tenant + permissions) instead of treating
+# every MCP call as anonymous.
+def _caller_auth_headers(api_key_fallback: str = "") -> Dict[str, str]:
+    """Return Authorization headers for upstream API calls.
+
+    Priority:
+      1. Caller's JWT (from ContextVar set by JWTAuthMiddleware) → forward as
+         `Authorization: Bearer <jwt>` so upstream knows the agent identity.
+      2. Static API-key fallback if provided → for backwards-compat or when
+         the MCP is called anonymously and we still want some auth.
+      3. Empty (anonymous) → upstream applies its anon-policy.
+    """
+    from auth import current_caller_jwt
+    jwt_str = current_caller_jwt()
+    if jwt_str:
+        return {"Authorization": f"Bearer {jwt_str}"}
+    if api_key_fallback:
+        return {"X-API-KEY": api_key_fallback}
+    return {}
+
+
 async def call_storage_api(
     method: str,
     endpoint: str,
@@ -241,6 +270,7 @@ async def call_storage_api(
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
 ) -> Any:
+    # storage-api expects X-API-KEY — caller's JWT not applicable here.
     return await _fetch_json(
         method,
         f"{STORAGE_API_BASE}{endpoint}",
@@ -400,11 +430,15 @@ async def call_cloud_api(
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Call Cloud API for inter-agent communication."""
+    """Call Cloud API for inter-agent communication.
+
+    Forwards the caller's JWT so cloud-api's RBAC filters (allowed_agents,
+    tenant scoping) apply to the right identity.
+    """
     return await _fetch_json(
         method,
         f"{CLOUD_API_BASE}{endpoint}",
-        headers={},
+        headers=_caller_auth_headers(),
         params=params,
         json_body=json_body,
         timeout=180.0,
@@ -464,15 +498,13 @@ async def call_content_api(
 ) -> Any:
     """Call Content API for posts, media, annotations, and blocks.
 
-    Sends X-API-KEY header if CONTENT_API_KEY env var is set.
+    Forwards the caller's JWT (so content-api sees their real agent identity
+    + tenant) when available; falls back to CONTENT_API_KEY if set.
     """
-    headers: Dict[str, str] = {}
-    if CONTENT_API_KEY:
-        headers["X-API-KEY"] = CONTENT_API_KEY
     return await _fetch_json(
         method,
         f"{CONTENT_API_BASE}{endpoint}",
-        headers=headers,
+        headers=_caller_auth_headers(api_key_fallback=CONTENT_API_KEY),
         params=params,
         json_body=json_body,
     )
@@ -485,11 +517,14 @@ async def call_tree_api(
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Call Tree API for projects, nodes, and tree operations."""
+    """Call Tree API for projects, nodes, and tree operations.
+
+    Forwards the caller's JWT for tenant-aware filtering when supported.
+    """
     return await _fetch_json(
         method,
         f"{TREE_API_BASE}{endpoint}",
-        headers={},
+        headers=_caller_auth_headers(),
         params=params,
         json_body=json_body,
     )
