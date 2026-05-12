@@ -922,6 +922,26 @@ oneal_mcp = FastMCP(
     Returns paginated list of O'Neal products enriched with storage.media_url fields.
     Each product includes transformable media URLs with automatic caching.
 
+    Filter parameters (all optional, AND-combined):
+    - search: whitespace-separated tokens; each must substring-match name OR product_code (AND across tokens)
+    - category: category slug (e.g. "helmets-mx", "protection-mtb"). Use facets_list to discover slugs.
+    - price_min / price_max: price range in EUR
+    - target_group: "Erwachsene" or "Jugendliche" (use this for "Kinder"/"Youth" queries)
+    - body_part: "Kopf", "Hand", "Knie", "Ellbogen", etc.
+    - product_type: "Helm", "Jersey", "Pant", etc.
+    - product_function: "Schutz", "Bekleidung", etc.
+    - sport: "MX" or "MTB"
+    - color: substring match on color name (English or German), e.g. "blue"/"blau"
+    - include_discontinued: false to exclude discontinued products (default true)
+    - sort: one of "name", "price", "code", "updated"
+    - order: "asc" (default) or "desc"
+    - limit / offset: pagination
+
+    Strategy for natural-language queries:
+    1. Map user terms via facets_list (slugs/colors/sizes) FIRST
+    2. Combine multiple structured filters in ONE call rather than guessing free-text
+    3. Use products_get only for individual deep-dives, not for bulk filtering
+
     Use storage.media_url + transformation parameters to get optimized images.
     See products_get for full transformation parameter documentation.
     """,
@@ -929,18 +949,34 @@ oneal_mcp = FastMCP(
 async def oneal_products_list(
     search: Optional[str] = None,
     category: Optional[str] = None,
-    season: Optional[int] = None,
-    cert: Optional[str] = None,
     price_min: Optional[float] = None,
     price_max: Optional[float] = None,
+    target_group: Optional[str] = None,
+    body_part: Optional[str] = None,
+    product_type: Optional[str] = None,
+    product_function: Optional[str] = None,
+    sport: Optional[str] = None,
+    color: Optional[str] = None,
+    include_discontinued: Optional[bool] = None,
     sort: Optional[str] = None,
-    order: str = "asc",
+    order: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    format: Optional[str] = None,
 ) -> Dict[str, Any]:
     params = _clean_params(
         search=search,
+        category=category,
+        price_min=price_min,
+        price_max=price_max,
+        target_group=target_group,
+        body_part=body_part,
+        product_type=product_type,
+        product_function=product_function,
+        sport=sport,
+        color=color,
+        include_discontinued=include_discontinued,
+        sort=sort,
+        order=order,
         limit=limit,
         offset=offset,
     )
@@ -984,7 +1020,18 @@ async def oneal_products_get(product_id: str) -> Dict[str, Any]:
 
 @oneal_mcp.tool(
     name="facets_list",
-    description="List product facets (categories, certifications, etc.).",
+    description="""List product facets to discover filterable values.
+
+    Returns:
+    - categories: list of {slug, name, count} — use slug as `category` param in products_list
+    - colors: list of {name, count} — note: products_list does NOT yet support color filter,
+      but the values here are useful for building search terms or for products_get inspection
+    - sizes: list of {name, count}
+    - price_range: {min, max, currency}
+
+    Always call this first when the user query mentions a category, color, or price range
+    so you use the correct slugs/values that actually exist in the catalog.
+    """,
 )
 async def oneal_facets_list() -> Dict[str, Any]:
     return await call_oneal_api("GET", "/v1/facets")
@@ -2151,6 +2198,59 @@ async def content_posts_update(
 
 
 @content_mcp.tool(
+    name="posts_content_patch",
+    description="""Patch post content with line-level operations instead of full replacement.
+
+    Much more efficient than posts_update for small changes — only sends the diff.
+
+    Operations:
+    - replace: Replace lines start_line..end_line with new text
+    - insert: Insert text after start_line (use 0 for before first line)
+    - delete: Remove lines start_line..end_line
+    - find/replace: Find text within line range and replace it
+
+    Example — make line 5 bold:
+      posts_content_patch(post_id=587, operations=[
+        {"op": "replace", "start_line": 5, "end_line": 5, "text": "**This line is now bold**"}
+      ])
+
+    Example — find and replace text in lines 10-20:
+      posts_content_patch(post_id=587, operations=[
+        {"op": "replace", "start_line": 10, "end_line": 20, "find": "old text", "replace_with": "new text"}
+      ])
+
+    Example — insert a new paragraph after line 8:
+      posts_content_patch(post_id=587, operations=[
+        {"op": "insert", "start_line": 8, "text": "\\nNew paragraph here.\\n"}
+      ])
+
+    Args:
+        post_id: ID of the post to patch
+        operations: List of patch operations (each has op, start_line, end_line, text, find, replace_with)
+        author_id: Who made the change
+        author_name: Display name of editor
+
+    Returns:
+        Updated post with new content
+    """,
+)
+async def content_posts_content_patch(
+    post_id: int,
+    operations: List[Dict[str, Any]],
+    author_id: Optional[str] = None,
+    author_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "operations": operations,
+    }
+    if author_id:
+        body["author_id"] = author_id
+    if author_name:
+        body["author_name"] = author_name
+    return await call_content_api("PATCH", f"/api/v1/posts/{post_id}/content-patch", json_body=body)
+
+
+@content_mcp.tool(
     name="posts_delete",
     description="Delete a post by ID. Returns success status.",
 )
@@ -2221,6 +2321,82 @@ async def content_posts_export_pdf(
 
     result: Dict[str, Any] = {
         "post_id": post_id,
+        "filename": filename,
+        "mime_type": "application/pdf",
+        "size_bytes": len(pdf_bytes),
+        "download_url": public_url,
+        "is_published": is_published,
+        "auth_required": not is_published,
+    }
+    if include_base64:
+        result["pdf_base64"] = base64.b64encode(pdf_bytes).decode("ascii")
+    return result
+
+
+@content_mcp.tool(
+    name="posts_export_themed_pdf",
+    description="""Export a post as a themed PDF via the markdown-api.
+
+    Available themes: default, minimal, technical, business, arkturian.
+    The markdown-api renders the post with professional styling and typography.
+
+    Returns metadata + a publicly fetchable download_url.
+
+    Args:
+        post_id: ID of the post to export
+        theme: Visual theme (default, minimal, technical, business, arkturian)
+        logo_url: Optional logo URL for branding (overrides post.logo_url).
+                  Can be a Storage URL (e.g. https://api-storage.arkturian.com/storage/media/12345)
+                  or any public image URL.
+        include_base64: Inline the full PDF as base64 (default False)
+
+    Returns:
+        dict with:
+        - post_id, theme, filename, mime_type, size_bytes, is_published
+        - download_url: PUBLIC URL to the themed PDF endpoint
+        - pdf_base64: base64 PDF content (only if include_base64=True)
+    """,
+)
+async def content_posts_export_themed_pdf(
+    post_id: int,
+    theme: str = "default",
+    logo_url: Optional[str] = None,
+    include_base64: bool = False,
+) -> Dict[str, Any]:
+    internal_url = f"{CONTENT_API_BASE}/api/v1/posts/{post_id}/export-themed.pdf"
+    headers: Dict[str, str] = {}
+    if CONTENT_API_KEY:
+        headers["X-API-KEY"] = CONTENT_API_KEY
+    params: Dict[str, str] = {"theme": theme}
+    if logo_url:
+        params["logo_url"] = logo_url
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.get(internal_url, headers=headers, params=params)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Upstream {response.status_code}: {response.text[:200]}"
+            )
+        pdf_bytes = response.content
+        disposition = response.headers.get("content-disposition", "")
+        filename = f"post-{post_id}-{theme}.pdf"
+        if "filename=" in disposition:
+            filename = disposition.split("filename=", 1)[1].strip().strip('"')
+
+    public_url = (
+        f"{CONTENT_API_PUBLIC_BASE}/api/v1/posts/{post_id}/export-themed.pdf"
+        f"?theme={theme}"
+    )
+
+    try:
+        post_meta = await call_content_api("GET", f"/api/v1/posts/{post_id}")
+        is_published = post_meta.get("status") == "published"
+    except Exception:
+        is_published = False
+
+    result: Dict[str, Any] = {
+        "post_id": post_id,
+        "theme": theme,
         "filename": filename,
         "mime_type": "application/pdf",
         "size_bytes": len(pdf_bytes),
@@ -4197,6 +4373,25 @@ dashboard_summary()                      → YTD/MTD income, expenses, profit
 dashboard_cashflow(year=2026)            → monthly breakdown
 ```
 
+### 5. PayPal — Visibility on incoming payments
+```
+paypal_status()                          → token + webhook health
+paypal_events_list(limit=20)             → last events received from PayPal
+paypal_events_list(process_status="error") → events that failed to process
+paypal_sync()                            → re-process pending events into transactions
+paypal_transactions(days=30)             → recent settled transactions (Reporting API)
+paypal_transactions(direction="out", limit=10) → last debits ("Abbuchungen")
+paypal_transactions(transaction_id="X")  → one specific transaction
+paypal_balance()                         → current PayPal balance per currency
+```
+PayPal captures + paid invoices auto-create income transactions
+(category="paypal", external_provider="paypal", external_id=<capture_id>).
+The (tenant_id, external_provider, external_id) tuple is unique → safe to retry.
+
+NOTE: paypal_transactions/balance hit PayPal's Reporting API and only see
+SETTLED transactions. Pending entries shown in the consumer Dashboard
+Activity view are not visible until they clear (1-3 business days).
+
 ## Data Model
 
 ### Clients
@@ -4616,6 +4811,111 @@ async def business_categories_list(cat_type: Optional[str] = None, api_key: Opti
     return await call_business_api("GET", "/api/v1/categories", params=params, api_key=api_key)
 
 
+# --- PayPal ---
+
+
+@business_mcp.tool(
+    name="paypal_status",
+    description=(
+        "PayPal integration health: OAuth token reachable? Mode (sandbox/live)? "
+        "Webhook registered? Returns {mode, configured, token_ok, webhook_id, registered_webhooks}."
+    ),
+)
+async def business_paypal_status(api_key: Optional[str] = None) -> Dict[str, Any]:
+    return await call_business_api("GET", "/api/v1/paypal/status", api_key=api_key)
+
+
+@business_mcp.tool(
+    name="paypal_events_list",
+    description=(
+        "List PayPal webhook events received by the business-api. Filter by "
+        "process_status (received/ignored/processed/error) or event_type "
+        "(e.g. PAYMENT.CAPTURE.COMPLETED). Use this to answer 'what came in?'."
+    ),
+)
+async def business_paypal_events_list(
+    process_status: Optional[str] = None,
+    event_type: Optional[str] = None,
+    limit: int = 50,
+    api_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    params = _clean_params(
+        process_status=process_status,
+        event_type=event_type,
+        limit=limit,
+    )
+    return await call_business_api(
+        "GET", "/api/v1/paypal/events", params=params, api_key=api_key
+    )
+
+
+@business_mcp.tool(
+    name="paypal_sync",
+    description=(
+        "Re-process pending PayPal events (those still in 'received' or 'error' "
+        "state) and fold them into the transactions ledger. Returns counts of "
+        "processed/skipped/errored events plus the IDs of created transactions."
+    ),
+)
+async def business_paypal_sync(
+    limit: int = 50,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    params = _clean_params(limit=limit)
+    return await call_business_api(
+        "POST", "/api/v1/paypal/sync", params=params, api_key=api_key
+    )
+
+
+@business_mcp.tool(
+    name="paypal_transactions",
+    description=(
+        "List PayPal transactions from the merchant's account via the Reporting "
+        "API. Use this to answer 'what came in / went out on PayPal?'. Default "
+        "window is the last 30 days (max 31, PayPal API limit). "
+        "direction='in' for credits, 'out' for debits, omit for both. "
+        "transaction_status: S (success), P (pending), V (voided), D (denied). "
+        "Pending Activity entries from the consumer Dashboard usually do not "
+        "appear here until they settle. Each row: transaction_id, date, amount, "
+        "currency, direction, fee, status, counterparty, subject."
+    ),
+)
+async def business_paypal_transactions(
+    days: int = 30,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    direction: Optional[str] = None,
+    transaction_status: Optional[str] = None,
+    transaction_id: Optional[str] = None,
+    limit: int = 100,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    params = _clean_params(
+        days=days,
+        start_date=start_date,
+        end_date=end_date,
+        direction=direction,
+        transaction_status=transaction_status,
+        transaction_id=transaction_id,
+        limit=limit,
+    )
+    return await call_business_api(
+        "GET", "/api/v1/paypal/transactions", params=params, api_key=api_key
+    )
+
+
+@business_mcp.tool(
+    name="paypal_balance",
+    description=(
+        "Current PayPal balance(s) on the merchant account. One entry per "
+        "currency held. Returns {account_number, as_of, balances:[{currency, "
+        "available, total, primary}]}."
+    ),
+)
+async def business_paypal_balance(api_key: Optional[str] = None) -> Dict[str, Any]:
+    return await call_business_api("GET", "/api/v1/paypal/balance", api_key=api_key)
+
+
 # --- Service Health ---
 
 
@@ -4766,18 +5066,26 @@ async def comm_send_email(
         message: Message text (Markdown supported)
         chat_id: Optional Telegram chat ID (defaults to admin chat)
         to: Optional contact name to resolve to chat_id (e.g. "sabrina"). Uses fuzzy matching.
+        bot: Optional bot identity to send through (e.g. "sabotnig" for the
+            Martin Sabotnig channel via @AgentOSKittBot). When omitted, the
+            recipient contact's preferred_bot is used; otherwise the
+            deployment's default bot. Use this only when you need to override
+            the natural routing — most outbound calls should leave it unset.
     """,
 )
 async def comm_send_telegram(
     message: str,
     chat_id: Optional[str] = None,
     to: Optional[str] = None,
+    bot: Optional[str] = None,
 ) -> Dict[str, Any]:
     json_body: Dict[str, Any] = {"message": message}
     if chat_id:
         json_body["chat_id"] = chat_id
     if to:
         json_body["to"] = to
+    if bot:
+        json_body["bot"] = bot
     return await call_comm_api("POST", "/api/v1/telegram/send", json_body=json_body)
 
 
@@ -4813,6 +5121,7 @@ async def comm_send_telegram_document(
     caption: Optional[str] = None,
     url: Optional[str] = None,
     data_base64: Optional[str] = None,
+    bot: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not url and not data_base64:
         return {"error": "Either url or data_base64 must be provided"}
@@ -4830,6 +5139,8 @@ async def comm_send_telegram_document(
         json_body["url"] = url
     if data_base64:
         json_body["data"] = data_base64
+    if bot:
+        json_body["bot"] = bot
     return await call_comm_api("POST", "/api/v1/telegram/send-document", json_body=json_body)
 
 
@@ -4855,6 +5166,7 @@ async def comm_send_message(
     subject: Optional[str] = None,
     template: Optional[str] = None,
     template_data: Optional[Dict[str, Any]] = None,
+    bot: Optional[str] = None,
 ) -> Dict[str, Any]:
     json_body: Dict[str, Any] = {
         "channel": channel,
@@ -4868,6 +5180,8 @@ async def comm_send_message(
         json_body["template"] = template
     if template_data:
         json_body["template_data"] = template_data
+    if bot:
+        json_body["bot"] = bot
     return await call_comm_api("POST", "/api/v1/send", json_body=json_body)
 
 
@@ -4886,14 +5200,20 @@ async def comm_send_message(
     The message is sent immediately and does not wait for a response.
     """,
 )
-async def comm_notify_human(message: str) -> Dict[str, Any]:
+async def comm_notify_human(
+    message: str,
+    bot: Optional[str] = None,
+) -> Dict[str, Any]:
     if not COMM_API_KEY:
         return {"error": "COMM_API_KEY not configured", "sent": False}
     try:
+        body: Dict[str, Any] = {"message": message}
+        if bot:
+            body["bot"] = bot
         result = await call_comm_api(
             "POST",
             "/api/v1/telegram/interventions/notification",
-            json_body={"message": message},
+            json_body=body,
         )
         return {"sent": result.get("sent", False), "message_id": result.get("message_id")}
     except Exception as e:
@@ -4917,28 +5237,36 @@ async def comm_ask_human(
     question: str,
     options: Optional[List[str]] = None,
     timeout_seconds: int = 300,
+    bot: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not COMM_API_KEY:
         return {"error": "COMM_API_KEY not configured", "response": None}
     try:
+        body: Dict[str, Any]
         if options and len(options) > 0:
+            body = {
+                "message": question,
+                "options": options,
+                "timeout_seconds": timeout_seconds,
+            }
+            if bot:
+                body["bot"] = bot
             create_result = await call_comm_api(
                 "POST",
                 "/api/v1/telegram/interventions/approval",
-                json_body={
-                    "message": question,
-                    "options": options,
-                    "timeout_seconds": timeout_seconds,
-                },
+                json_body=body,
             )
         else:
+            body = {
+                "message": question,
+                "timeout_seconds": timeout_seconds,
+            }
+            if bot:
+                body["bot"] = bot
             create_result = await call_comm_api(
                 "POST",
                 "/api/v1/telegram/interventions/text-input",
-                json_body={
-                    "message": question,
-                    "timeout_seconds": timeout_seconds,
-                },
+                json_body=body,
             )
 
         request_id = create_result.get("id")
