@@ -5919,17 +5919,59 @@ async def cloud_inbox(session_name: str) -> Dict[str, Any]:
 
 @cloud_mcp.tool(
     name="create_session",
-    description="Create a new Claude Code tmux session. Returns the session name. Use agent='claude' (default), 'codex', or 'gemini'. Set pretty=True for JSON chat mode (queue/widget agents).",
+    description=(
+        "Create a new agent session, federation-aware. Returns {status, name, node}. "
+        "Use agent='claude' (default), 'codex', or 'gemini'. "
+        "Set node='arkserver|arkturian|oneal|pdrei|mac' to spawn on a specific federation peer "
+        "(default: local node where the cloud-api receiving this MCP call runs). "
+        "owner_email assigns ownership for RBAC visibility/quota. "
+        "Set pretty=True for JSON chat mode (queue/widget agents)."
+    ),
 )
 async def cloud_create_session(
     name: str,
     pretty: bool = False,
     agent: str = "claude",
+    node: str = "",
+    owner_email: str = "",
+    department: str = "engineering",
+    role: str = "developer",
+    auto_restart: bool = True,
 ) -> Dict[str, Any]:
-    return await call_cloud_api(
-        "POST", "/api/sessions",
-        json_body={"name": name, "pretty": pretty, "agent": agent},
-    )
+    body: Dict[str, Any] = {
+        "name": name,
+        "pretty": pretty,
+        "agent": agent,
+        "auto_restart": auto_restart,
+        "department": department,
+        "role": role,
+    }
+    if node:
+        body["node"] = node.lower()
+    if owner_email:
+        body["owner_email"] = owner_email
+    return await call_cloud_api("POST", "/api/sessions", json_body=body)
+
+
+@cloud_mcp.tool(
+    name="self_restart",
+    description=(
+        "Restart your own session. Use this as a last-resort self-heal when "
+        "your MCP-connection state is stuck — typical symptoms: MCP tool calls "
+        "fail with 404/401 even though the underlying service is reachable via "
+        "direct HTTP, '/mcp' refresh doesn't recover, you have already retried. "
+        "The cloud-api kills your tmux process and starts a fresh one with "
+        "--continue, so your conversation history is preserved. "
+        "prepare_bot_home() runs on restart and regenerates mcp-auth-helper "
+        "and .claude.json from the current host-canonical config — so any "
+        "upstream URL change (like an MCP server moving to a new vhost) is "
+        "picked up automatically. "
+        "Federation-aware: forwards to the owning node. You must pass your "
+        "own session_name (from your CLAUDE.md identity block)."
+    ),
+)
+async def cloud_self_restart(session_name: str) -> Dict[str, Any]:
+    return await call_cloud_api("POST", f"/api/sessions/{session_name}/restart")
 
 
 @cloud_mcp.tool(
