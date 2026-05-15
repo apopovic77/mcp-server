@@ -4951,6 +4951,173 @@ async def business_paypal_balance(api_key: Optional[str] = None) -> Dict[str, An
     return await call_business_api("GET", "/api/v1/paypal/balance", api_key=api_key)
 
 
+# --- Reminders ---
+
+
+@business_mcp.tool(
+    name="reminders_create",
+    description=(
+        "Create a management reminder that fires via Telegram (and/or email) at "
+        "next_fire_at. Supports recurrence (none/daily/weekly/monthly/yearly). "
+        "For MONTHLY use recurrence_day (1-28) to pin to a specific day-of-month. "
+        "reminder_type: subscription_renewal | payment_due | tax_deadline | followup | generic. "
+        "channel: telegram | email | both. recipient: Telegram contact name (e.g. 'alex') or email."
+    ),
+)
+async def business_reminders_create(
+    title: str,
+    next_fire_at: str,
+    description: Optional[str] = None,
+    reminder_type: str = "generic",
+    amount: Optional[float] = None,
+    currency: str = "EUR",
+    recurrence: str = "none",
+    recurrence_day: Optional[int] = None,
+    channel: str = "telegram",
+    recipient: Optional[str] = None,
+    linked_client_id: Optional[int] = None,
+    linked_document_id: Optional[int] = None,
+    linked_transaction_id: Optional[int] = None,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "title": title,
+        "next_fire_at": next_fire_at,
+        "reminder_type": reminder_type,
+        "currency": currency,
+        "recurrence": recurrence,
+        "channel": channel,
+    }
+    for k, v in {
+        "description": description,
+        "amount": amount,
+        "recurrence_day": recurrence_day,
+        "recipient": recipient,
+        "linked_client_id": linked_client_id,
+        "linked_document_id": linked_document_id,
+        "linked_transaction_id": linked_transaction_id,
+    }.items():
+        if v is not None:
+            body[k] = v
+    return await call_business_api("POST", "/api/v1/reminders", json_body=body, api_key=api_key)
+
+
+@business_mcp.tool(
+    name="reminders_list",
+    description=(
+        "List reminders. Filter by status (active/completed/cancelled), "
+        "reminder_type, or due_before (ISO datetime, to find overdue items)."
+    ),
+)
+async def business_reminders_list(
+    status: Optional[str] = None,
+    reminder_type: Optional[str] = None,
+    due_before: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    api_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    params = _clean_params(
+        status=status,
+        reminder_type=reminder_type,
+        due_before=due_before,
+        limit=limit,
+        offset=offset,
+    )
+    return await call_business_api("GET", "/api/v1/reminders", params=params, api_key=api_key)
+
+
+@business_mcp.tool(
+    name="reminders_upcoming",
+    description="Get next N active reminders sorted by due date. Use this to answer 'what's coming up'.",
+)
+async def business_reminders_upcoming(
+    limit: int = 10,
+    api_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    params = _clean_params(limit=limit)
+    return await call_business_api("GET", "/api/v1/reminders/upcoming", params=params, api_key=api_key)
+
+
+@business_mcp.tool(
+    name="reminders_get",
+    description="Get a reminder by ID.",
+)
+async def business_reminders_get(rem_id: int, api_key: Optional[str] = None) -> Dict[str, Any]:
+    return await call_business_api("GET", f"/api/v1/reminders/{rem_id}", api_key=api_key)
+
+
+@business_mcp.tool(
+    name="reminders_update",
+    description="Update any field of a reminder (incl. next_fire_at, recurrence, status, amount).",
+)
+async def business_reminders_update(
+    rem_id: int,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    reminder_type: Optional[str] = None,
+    amount: Optional[float] = None,
+    currency: Optional[str] = None,
+    next_fire_at: Optional[str] = None,
+    recurrence: Optional[str] = None,
+    recurrence_day: Optional[int] = None,
+    channel: Optional[str] = None,
+    recipient: Optional[str] = None,
+    status: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {}
+    for k, v in {
+        "title": title,
+        "description": description,
+        "reminder_type": reminder_type,
+        "amount": amount,
+        "currency": currency,
+        "next_fire_at": next_fire_at,
+        "recurrence": recurrence,
+        "recurrence_day": recurrence_day,
+        "channel": channel,
+        "recipient": recipient,
+        "status": status,
+    }.items():
+        if v is not None:
+            body[k] = v
+    return await call_business_api("PATCH", f"/api/v1/reminders/{rem_id}", json_body=body, api_key=api_key)
+
+
+@business_mcp.tool(
+    name="reminders_complete",
+    description="Mark a reminder as completed (recurring reminders stop firing).",
+)
+async def business_reminders_complete(rem_id: int, api_key: Optional[str] = None) -> Dict[str, Any]:
+    return await call_business_api("POST", f"/api/v1/reminders/{rem_id}/complete", api_key=api_key)
+
+
+@business_mcp.tool(
+    name="reminders_cancel",
+    description="Cancel a reminder (status → cancelled, stops firing but keeps history).",
+)
+async def business_reminders_cancel(rem_id: int, api_key: Optional[str] = None) -> Dict[str, Any]:
+    return await call_business_api("POST", f"/api/v1/reminders/{rem_id}/cancel", api_key=api_key)
+
+
+@business_mcp.tool(
+    name="reminders_fire",
+    description="Fire a reminder NOW (manual/testing). Recurrence still advances normally.",
+)
+async def business_reminders_fire(rem_id: int, api_key: Optional[str] = None) -> Dict[str, Any]:
+    return await call_business_api("POST", f"/api/v1/reminders/{rem_id}/fire", api_key=api_key)
+
+
+@business_mcp.tool(
+    name="reminders_delete",
+    description="Permanently delete a reminder.",
+)
+async def business_reminders_delete(rem_id: int, api_key: Optional[str] = None) -> Dict[str, str]:
+    await call_business_api("DELETE", f"/api/v1/reminders/{rem_id}", api_key=api_key)
+    return {"status": "deleted", "id": str(rem_id)}
+
+
 # --- Service Health ---
 
 
