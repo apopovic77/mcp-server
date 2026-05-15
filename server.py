@@ -4858,8 +4858,13 @@ async def business_categories_list(cat_type: Optional[str] = None, api_key: Opti
         "actually create the transactions. Idempotent: re-running the same CSV "
         "skips already-imported rows via (counterparty_iban, value_date, amount, "
         "description) hash. Auto-categorizes via keyword rules (Anthropic→Software, "
-        "Hetzner→Server, Finanzamt→Steuern, Honorar→Honorar etc.). Returns batch_id, "
-        "row counts, by_category breakdown, and a preview list."
+        "Hetzner→Server, Finanzamt→Steuern, Honorar→Honorar etc.). "
+        "cross_dedup_days (default 3): skip rows that match an existing "
+        "transaction (manual / paypal / other) by amount + tx_date ± N days. "
+        "since_date (YYYY-MM-DD): skip rows before this date. "
+        "Returns batch_id, row counts (new/duplicate/cross_match/before_since), "
+        "by_category breakdown, and a preview list (with matched_existing_tx_id "
+        "where cross-source dedup fired)."
     ),
 )
 async def business_transactions_import(
@@ -4868,6 +4873,8 @@ async def business_transactions_import(
     provider_label: str = "bank_erste",
     default_vat_rate: float = 0.0,
     preview_limit: int = 50,
+    cross_dedup_days: int = 3,
+    since_date: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     body = {
@@ -4876,7 +4883,10 @@ async def business_transactions_import(
         "provider_label": provider_label,
         "default_vat_rate": default_vat_rate,
         "preview_limit": preview_limit,
+        "cross_dedup_days": cross_dedup_days,
     }
+    if since_date is not None:
+        body["since_date"] = since_date
     return await call_business_api(
         "POST", "/api/v1/transactions/import", json_body=body, api_key=api_key
     )
