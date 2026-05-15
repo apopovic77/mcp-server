@@ -4846,6 +4846,72 @@ async def business_categories_list(cat_type: Optional[str] = None, api_key: Opti
     return await call_business_api("GET", "/api/v1/categories", params=params, api_key=api_key)
 
 
+# --- Bank Statement Import ---
+
+
+@business_mcp.tool(
+    name="transactions_import",
+    description=(
+        "Import a bank statement CSV (Erste Bank format) into transactions. "
+        "Pass the CSV text content via csv_text. Defaults to dry_run=true so you "
+        "can preview the categorization before persisting — set dry_run=false to "
+        "actually create the transactions. Idempotent: re-running the same CSV "
+        "skips already-imported rows via (counterparty_iban, value_date, amount, "
+        "description) hash. Auto-categorizes via keyword rules (Anthropic→Software, "
+        "Hetzner→Server, Finanzamt→Steuern, Honorar→Honorar etc.). Returns batch_id, "
+        "row counts, by_category breakdown, and a preview list."
+    ),
+)
+async def business_transactions_import(
+    csv_text: str,
+    dry_run: bool = True,
+    provider_label: str = "bank_erste",
+    default_vat_rate: float = 0.0,
+    preview_limit: int = 50,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    body = {
+        "csv_text": csv_text,
+        "dry_run": dry_run,
+        "provider_label": provider_label,
+        "default_vat_rate": default_vat_rate,
+        "preview_limit": preview_limit,
+    }
+    return await call_business_api(
+        "POST", "/api/v1/transactions/import", json_body=body, api_key=api_key
+    )
+
+
+@business_mcp.tool(
+    name="transactions_import_batches",
+    description="List recent bank-import batches with row count, date range, and totals.",
+)
+async def business_transactions_import_batches(
+    limit: int = 20,
+    api_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    params = _clean_params(limit=limit)
+    return await call_business_api(
+        "GET", "/api/v1/transactions/import/batches", params=params, api_key=api_key
+    )
+
+
+@business_mcp.tool(
+    name="transactions_import_delete_batch",
+    description=(
+        "Roll back a bank import: delete all transactions belonging to a specific "
+        "batch_id. Returns the count of deleted rows."
+    ),
+)
+async def business_transactions_import_delete_batch(
+    batch_id: str,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    return await call_business_api(
+        "DELETE", f"/api/v1/transactions/import/batches/{batch_id}", api_key=api_key
+    )
+
+
 # --- PayPal ---
 
 
