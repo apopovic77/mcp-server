@@ -4098,6 +4098,112 @@ async def knowledge_service_health() -> Dict[str, Any]:
     return await call_knowledge_api("GET", "/health")
 
 
+@knowledge_mcp.tool(
+    name="knowledge_collection_list",
+    description="""List all annotated knowledge for a storage collection in one call.
+
+    Returns one entry per storage object — with title, description preview,
+    annotations count, and a flag for missing knowledge.
+
+    Use this when you want to know "what's in collection X".
+
+    Parameters:
+    - collection_id: Storage collection identifier (e.g. "FloraFauna")
+    - tenant_id: Optional tenant override (e.g. "arkturian")
+    - limit: Max objects (1-500, default 200)
+    - include_annotations: Include full annotation list per object (default false)
+    """,
+)
+async def knowledge_collection_list(
+    collection_id: str,
+    tenant_id: Optional[str] = None,
+    limit: int = 200,
+    include_annotations: bool = False,
+) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"limit": limit, "include_annotations": include_annotations}
+    if tenant_id:
+        params["tenant_id"] = tenant_id
+    return await call_knowledge_api(
+        "GET",
+        f"/api/v1/knowledge/collection/{collection_id}",
+        params=params,
+    )
+
+
+@knowledge_mcp.tool(
+    name="knowledge_collection_summary",
+    description="""Aggregated AI-friendly summary of a storage collection.
+
+    Returns total counts, category breakdown (amphibian / reptile / plant / …),
+    list of all titles, and IDs that still lack annotated knowledge.
+
+    Designed for LLM ingestion — one call answers "what do we have here".
+
+    Parameters:
+    - collection_id: Storage collection identifier (e.g. "FloraFauna")
+    - tenant_id: Optional tenant override (e.g. "arkturian")
+    - limit: Max objects (1-500, default 200)
+    """,
+)
+async def knowledge_collection_summary(
+    collection_id: str,
+    tenant_id: Optional[str] = None,
+    limit: int = 200,
+) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"limit": limit}
+    if tenant_id:
+        params["tenant_id"] = tenant_id
+    return await call_knowledge_api(
+        "GET",
+        f"/api/v1/knowledge/collection/{collection_id}/summary",
+        params=params,
+    )
+
+
+@knowledge_mcp.tool(
+    name="knowledge_collection_ask",
+    description="""Ask Claude / ChatGPT / Gemini a free-form question about a collection.
+
+    The service gathers all annotated knowledge of the collection, packs it as
+    structured context, and forwards it to the chosen AI model.
+
+    Use cases:
+    - "Welche giftigen Tiere haben wir?"
+    - "Liste alle Pflanzen mit medizinischer Bedeutung"
+    - "Welches Objekt ist nachtaktiv?"
+
+    Returns answer + source storage IDs used in context.
+
+    Parameters:
+    - collection_id: Storage collection identifier (e.g. "FloraFauna")
+    - question: Question to answer (3-2000 chars)
+    - tenant_id: Optional tenant override (e.g. "arkturian")
+    - model: claude | chatgpt | gemini (default claude)
+    - max_context_objects: Max objects in AI prompt (1-200, default 80)
+    """,
+)
+async def knowledge_collection_ask(
+    collection_id: str,
+    question: str,
+    tenant_id: Optional[str] = None,
+    model: str = "claude",
+    max_context_objects: int = 80,
+) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    if tenant_id:
+        params["tenant_id"] = tenant_id
+    return await call_knowledge_api(
+        "POST",
+        f"/api/v1/knowledge/collection/{collection_id}/ask",
+        params=params,
+        json_body={
+            "question": question,
+            "model": model,
+            "max_context_objects": max_context_objects,
+        },
+    )
+
+
 knowledge_app = knowledge_mcp.streamable_http_app()
 mount_mcp("knowledge", KNOWLEDGE_PATH, knowledge_app)
 
