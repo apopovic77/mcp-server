@@ -4102,29 +4102,60 @@ async def knowledge_service_health() -> Dict[str, Any]:
 
 @knowledge_mcp.tool(
     name="knowledge_collection_list",
-    description="""List all annotated knowledge for a storage collection in one call.
+    description="""Classic SQL-style query over a storage collection. NO AI involved.
 
-    Returns one entry per storage object — with title, description preview,
-    annotations count, and a flag for missing knowledge.
+    Returns one entry per storage object with title, description preview,
+    category, media URLs (image, thumbnail, audio), and annotations count.
 
-    Use this when you want to know "what's in collection X".
+    FILTERS (combine freely):
+    - category: "animals" (all fauna) | "plants" | one of:
+        amphibian, reptile, mammal, bird, insect, plant, geology, fungi
+    - search: case-insensitive substring match on title
+    - has_3d: true → only objects with 3D positions, false → only without
+    - only_with_knowledge: true → drop stub entries that have no annotations yet
+
+    USE CASES:
+    - "Gib mir alle Tiere mit Name und Bild" → category="animals"
+    - "Alle Pflanzen mit 'Kröte' im Namen" → category="plants", search="kröte"
+    - "Welche Objekte haben ein 3D-Modell?" → has_3d=true
 
     Parameters:
     - collection_id: Storage collection identifier (e.g. "FloraFauna")
     - tenant_id: Optional tenant override (e.g. "arkturian")
-    - limit: Max objects (1-500, default 200)
+    - category: Optional category filter
+    - search: Optional title substring filter
+    - has_3d: Optional 3D presence filter
+    - only_with_knowledge: Drop objects without annotations (default false)
     - include_annotations: Include full annotation list per object (default false)
+    - include_media_urls: Include image/thumbnail/audio URLs (default true)
+    - limit: Max objects to fetch from storage (1-500, default 200)
     """,
 )
 async def knowledge_collection_list(
     collection_id: str,
     tenant_id: Optional[str] = None,
-    limit: int = 200,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    has_3d: Optional[bool] = None,
+    only_with_knowledge: bool = False,
     include_annotations: bool = False,
+    include_media_urls: bool = True,
+    limit: int = 200,
 ) -> Dict[str, Any]:
-    params: Dict[str, Any] = {"limit": limit, "include_annotations": include_annotations}
+    params: Dict[str, Any] = {
+        "limit": limit,
+        "include_annotations": include_annotations,
+        "include_media_urls": include_media_urls,
+        "only_with_knowledge": only_with_knowledge,
+    }
     if tenant_id:
         params["tenant_id"] = tenant_id
+    if category:
+        params["category"] = category
+    if search:
+        params["search"] = search
+    if has_3d is not None:
+        params["has_3d"] = has_3d
     return await call_knowledge_api(
         "GET",
         f"/api/v1/knowledge/collection/{collection_id}",
