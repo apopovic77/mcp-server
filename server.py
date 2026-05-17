@@ -394,6 +394,7 @@ async def call_knowledge_api(
     *,
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
+    timeout: Optional[float] = None,
 ) -> Any:
     """Call Knowledge API (no auth required)."""
     return await _fetch_json(
@@ -402,6 +403,7 @@ async def call_knowledge_api(
         headers={},
         params=params,
         json_body=json_body,
+        timeout=timeout,
     )
 
 
@@ -4201,6 +4203,7 @@ async def knowledge_collection_ask(
             "model": model,
             "max_context_objects": max_context_objects,
         },
+        timeout=180.0,
     )
 
 
