@@ -2680,32 +2680,77 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
 
 @content_mcp.tool(
     name="doc_apply_text",
-    description="""Replace a collab-text post's full content (CRDT-merged).
+    description="""Write into a collab-text post's CRDT — replace, append, or prepend.
 
-    Use this when an agent wants to edit a post that has
-    `doc_type='collab_text'` without opening a WebSocket. The server
-    computes the diff against the current state and applies it as a
-    CRDT update — all browser tabs / other agents currently editing
-    the same post see the new content live.
+    Use this when an agent wants to edit a `doc_type='collab_text'` post
+    without opening a WebSocket. All connected browser tabs / other
+    agents see the change instantly via the existing WS fan-out.
 
-    For surgical inserts/deletes use the WebSocket directly; this tool
-    is the convenient "here is the new full text" path for LLM agents.
+    Modes:
+      - `replace` (default): swap the document's full content. Use when
+        you are the sole writer or have JUST read the state via
+        `doc_get_text`. Dangerous during human-agent collaboration —
+        will erase whatever the human just typed.
+      - `append`: insert your text at the END of the current content.
+        SAFE during human-agent collaboration — preserves the human's
+        live typing. Use for "and here's my contribution at the bottom".
+      - `prepend`: insert at the BEGINNING. Less common; useful for
+        adding a header/intro.
+
+    For surgical mid-document edits open a WebSocket and speak yjs.
+    This tool is the request/response path for LLM agents.
 
     Args:
         post_id: the collab-text post
-        text: the new full content (markdown / prose / code as appropriate)
+        text: the content to write
+        mode: 'replace' | 'append' | 'prepend' (default 'replace')
 
     Returns:
-        applied: bool — false if the new text is identical to current
-        seq: int — the assigned op-log seq (if applied)
-        length: int — length of the resulting content
+        applied: bool — false if mode='replace' and text equals current
+        seq: int — the assigned op-log seq
+        length: int — length of the doc after the write
+        mode: which mode was applied
     """,
 )
-async def content_doc_apply_text(post_id: int, text: str) -> Dict[str, Any]:
+async def content_doc_apply_text(
+    post_id: int,
+    text: str,
+    mode: str = "replace",
+) -> Dict[str, Any]:
     return await call_content_api(
         "POST",
         f"/api/v1/posts/{post_id}/crdt/apply",
-        json_body={"text": text},
+        json_body={"text": text, "mode": mode},
+    )
+
+
+@content_mcp.tool(
+    name="doc_get_text",
+    description="""Read the LIVE CRDT text of a collab-text post.
+
+    Unlike `posts_get` (which returns `posts.content` from the periodic
+    snapshot, lag up to 60s), this returns what the human / other agents
+    currently have on their screens — the authoritative in-memory CRDT
+    state.
+
+    Use this BEFORE a `doc_apply_text(mode='replace')` to avoid
+    overwriting concurrent writes, or just to read what your colleagues
+    have produced so far.
+
+    Args:
+        post_id: the collab-text post
+
+    Returns:
+        text: the current full content as string
+        version: highest op-log seq for this post (use to detect changes
+                 between two reads — bumps with every write)
+        length: len(text)
+    """,
+)
+async def content_doc_get_text(post_id: int) -> Dict[str, Any]:
+    return await call_content_api(
+        "GET",
+        f"/api/v1/posts/{post_id}/crdt/text",
     )
 
 
