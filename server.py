@@ -2657,6 +2657,130 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
     return await call_content_api("DELETE", f"/api/v1/posts/{post_id}/blocks/{block_id}")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Phase-0 multi-agent coding helpers — see content-api Post
+# "multi-agent-coding-phase-0-pattern" for the full workflow doc.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@content_mcp.tool(
+    name="doc_synthesize",
+    description="""Consolidate `code_section` blocks of a post into the post's
+    `content` field, with atomic conflict detection via Tier-2 optimistic lock.
+
+    The Phase-0 multi-agent coding pattern: each participating agent appends
+    its contribution as a `code_section` block (own DB row, no write race).
+    Periodically — or on demand — any agent calls this tool to materialize
+    a consolidated `Post.content` from the blocks. Other tools / IDEs that
+    only read `content` then see the latest synthesis.
+
+    Strategies (`strategy` param):
+      - `code_sections` (default): includes `code_section` and `code` blocks;
+        emits a section banner (`// section: <name>  (by <agent>)`) before
+        each block's content, indented if `wrapper_indent` is set.
+      - `verbatim`: includes ALL blocks in position order, no banners,
+        single blank line between blocks. For plain prose docs.
+
+    Optional wrappers (`wrapper_before`, `wrapper_after`): literal text
+    prepended/appended around the synthesized body. Use for a C# class shell
+    (`namespace ... { public class User { ... }`).
+
+    `wrapper_indent` (int, default 0): indent each section's lines by N spaces.
+    Useful when the wrapper is `class User {` and sections are method bodies.
+
+    Concurrency: pass `expected_version` if you already know the post's
+    current version (e.g. from a previous tool result). Omit to let this
+    tool fetch the current version first and pass it through — that path
+    is **still** race-safe because the final `posts_update` carries the
+    expected_version under Tier-2 optimistic locking.
+
+    Reservation hint (Phase-0 convention): if any block of type
+    `reservation` has `metadata_json.expires_at` in the future and matches
+    a section another agent is about to overwrite, the synthesizer respects
+    the most recent contribution wins (CRDT-style "last-write-wins per
+    section"). Reservations aren't enforced by the server — they're a
+    courtesy signal for the participating agents to coordinate.
+
+    Returns dict with:
+      - post_id, new_version, content
+      - blocks_synthesized: count of blocks that contributed
+      - blocks_skipped: count filtered out (wrong type for strategy)
+    """,
+)
+async def content_doc_synthesize(
+    post_id: int,
+    strategy: str = "code_sections",
+    wrapper_before: Optional[str] = None,
+    wrapper_after: Optional[str] = None,
+    wrapper_indent: int = 0,
+    expected_version: Optional[int] = None,
+    author_id: str = "synthesis",
+    author_name: str = "Synthesis Pass",
+) -> Dict[str, Any]:
+    if strategy not in ("code_sections", "verbatim"):
+        raise ValueError(
+            f"unknown strategy '{strategy}'. expected 'code_sections' or 'verbatim'."
+        )
+
+    # 1. Fetch current post (for version) + blocks
+    post = await call_content_api("GET", f"/api/v1/posts/{post_id}")
+    if expected_version is None:
+        expected_version = post.get("version", 1)
+    blocks = await call_content_api("GET", f"/api/v1/posts/{post_id}/blocks/")
+
+    # 2. Filter per strategy + sort by position
+    if strategy == "code_sections":
+        relevant = [b for b in blocks if b.get("block_type") in ("code_section", "code")]
+    else:
+        relevant = [b for b in blocks if b.get("block_type") != "reservation"]
+    skipped = len(blocks) - len(relevant)
+    relevant.sort(key=lambda b: (b.get("position", 0), b.get("id", 0)))
+
+    # 3. Compose
+    indent = " " * wrapper_indent
+    parts: List[str] = []
+    if wrapper_before:
+        parts.append(wrapper_before.rstrip("\n"))
+    for b in relevant:
+        meta = b.get("metadata_json") or {}
+        section = meta.get("section") or f"block-{b.get('id')}"
+        agent = meta.get("agent") or b.get("author_name") or "unknown"
+        body = b.get("content") or ""
+        if strategy == "code_sections":
+            parts.append(f"{indent}// section: {section}  (by {agent})")
+            for line in body.splitlines():
+                parts.append(f"{indent}{line}")
+            parts.append("")  # blank line between sections
+        else:
+            parts.append(body)
+            parts.append("")
+    if wrapper_after:
+        parts.append(wrapper_after.rstrip("\n"))
+    synthesized = "\n".join(parts).rstrip() + "\n"
+
+    # 4. Atomic update under Tier-2 optimistic lock — if a different writer
+    #    bumped the post between our read above and this PUT, we get 409 and
+    #    the caller can retry with a fresh version.
+    result = await call_content_api(
+        "PUT",
+        f"/api/v1/posts/{post_id}",
+        json_body={
+            "content": synthesized,
+            "author_id": author_id,
+            "author_name": author_name,
+            "expected_version": expected_version,
+        },
+    )
+    return {
+        "post_id": post_id,
+        "new_version": result.get("version"),
+        "blocks_synthesized": len(relevant),
+        "blocks_skipped": skipped,
+        "content_length": len(synthesized),
+        "content": synthesized,
+    }
+
+
 @content_mcp.tool(
     name="references_list",
     description="""List references (bibliography entries) for a post.
