@@ -2210,6 +2210,11 @@ async def content_posts_create(
     description="""Update an existing post.
 
     All fields are optional. Only provided fields will be updated.
+
+    Optimistic concurrency: pass `expected_version` (the version you read from
+    `posts_get`) to gate the write. On version mismatch the server returns
+    409 with `{detail: 'version_conflict', current_version, current_content}`
+    so you can merge and retry. Omit it for last-writer-wins.
     """,
 )
 async def content_posts_update(
@@ -2221,6 +2226,7 @@ async def content_posts_update(
     author_id: Optional[str] = None,
     author_name: Optional[str] = None,
     metadata_json: Optional[Dict[str, Any]] = None,
+    expected_version: Optional[int] = None,
 ) -> Dict[str, Any]:
     body = _clean_params(
         title=title,
@@ -2230,6 +2236,7 @@ async def content_posts_update(
         author_id=author_id,
         author_name=author_name,
         metadata_json=metadata_json,
+        expected_version=expected_version,
     )
     return await call_content_api("PUT", f"/api/v1/posts/{post_id}", json_body=body)
 
@@ -2276,7 +2283,11 @@ async def content_posts_content_patch(
     operations: List[Dict[str, Any]],
     author_id: Optional[str] = None,
     author_name: Optional[str] = None,
+    expected_version: Optional[int] = None,
 ) -> Dict[str, Any]:
+    """Optimistic concurrency: pass `expected_version` (from posts_get) to
+    gate the write. Server returns 409 with `current_version` + `current_content`
+    on mismatch."""
     body = {
         "operations": operations,
     }
@@ -2284,6 +2295,8 @@ async def content_posts_content_patch(
         body["author_id"] = author_id
     if author_name:
         body["author_name"] = author_name
+    if expected_version is not None:
+        body["expected_version"] = expected_version
     return await call_content_api("PATCH", f"/api/v1/posts/{post_id}/content-patch", json_body=body)
 
 
@@ -2574,7 +2587,12 @@ async def content_blocks_create(
 
 @content_mcp.tool(
     name="blocks_update",
-    description="Update a content block. All fields optional.",
+    description="""Update a content block. All fields optional.
+
+    Optimistic concurrency: pass `expected_version` (from blocks_get/list) to
+    gate the write. Server returns 409 with `current_version` + `current_block`
+    on mismatch.
+    """,
 )
 async def content_blocks_update(
     post_id: int,
@@ -2582,11 +2600,13 @@ async def content_blocks_update(
     block_type: Optional[str] = None,
     position: Optional[int] = None,
     data_json: Optional[Dict[str, Any]] = None,
+    expected_version: Optional[int] = None,
 ) -> Dict[str, Any]:
     body = _clean_params(
         block_type=block_type,
         position=position,
         data_json=data_json,
+        expected_version=expected_version,
     )
     return await call_content_api("PUT", f"/api/v1/posts/{post_id}/blocks/{block_id}", json_body=body)
 
