@@ -2177,8 +2177,16 @@ async def content_posts_get(post_id: int) -> Dict[str, Any]:
     description="""Create a new post.
 
     Required: title (str)
-    Optional: content, content_type (md|html|json), status (draft|published|archived),
-              author_id, author_name, metadata_json
+    Optional:
+      - content, content_type (md|html|json), status (draft|published|archived)
+      - doc_type: free-form discriminator, drives doctype-specific renderers in
+        the frontend (e.g. 'docu', 'story', 'audio_guide', 'review',
+        'annotation', '3dpresentation', 'collab_text'). 'collab_text' opts
+        into Phase-1 realtime collaboration (CRDT-backed WebSocket editor).
+      - partner_id: tenant assignment. Omit to auto-fill with caller's
+        primary tenant.
+      - subtitle, tags, language
+      - author_id, author_name, metadata_json
     """,
 )
 async def content_posts_create(
@@ -2186,22 +2194,29 @@ async def content_posts_create(
     content: Optional[str] = None,
     content_type: str = "md",
     status: str = "draft",
+    doc_type: Optional[str] = None,
+    partner_id: Optional[str] = None,
+    subtitle: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    language: Optional[str] = None,
     author_id: Optional[str] = None,
     author_name: Optional[str] = None,
     metadata_json: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    body = {
-        "title": title,
-        "content": content,
-        "content_type": content_type,
-        "status": status,
-    }
-    if author_id:
-        body["author_id"] = author_id
-    if author_name:
-        body["author_name"] = author_name
-    if metadata_json:
-        body["metadata_json"] = metadata_json
+    body = _clean_params(
+        title=title,
+        content=content,
+        content_type=content_type,
+        status=status,
+        doc_type=doc_type,
+        partner_id=partner_id,
+        subtitle=subtitle,
+        tags=tags,
+        language=language,
+        author_id=author_id,
+        author_name=author_name,
+        metadata_json=metadata_json,
+    )
     return await call_content_api("POST", "/api/v1/posts/", json_body=body)
 
 
@@ -2661,6 +2676,37 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
 # Phase-0 multi-agent coding helpers — see content-api Post
 # "multi-agent-coding-phase-0-pattern" for the full workflow doc.
 # ──────────────────────────────────────────────────────────────────────
+
+
+@content_mcp.tool(
+    name="doc_apply_text",
+    description="""Replace a collab-text post's full content (CRDT-merged).
+
+    Use this when an agent wants to edit a post that has
+    `doc_type='collab_text'` without opening a WebSocket. The server
+    computes the diff against the current state and applies it as a
+    CRDT update — all browser tabs / other agents currently editing
+    the same post see the new content live.
+
+    For surgical inserts/deletes use the WebSocket directly; this tool
+    is the convenient "here is the new full text" path for LLM agents.
+
+    Args:
+        post_id: the collab-text post
+        text: the new full content (markdown / prose / code as appropriate)
+
+    Returns:
+        applied: bool — false if the new text is identical to current
+        seq: int — the assigned op-log seq (if applied)
+        length: int — length of the resulting content
+    """,
+)
+async def content_doc_apply_text(post_id: int, text: str) -> Dict[str, Any]:
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/crdt/apply",
+        json_body={"text": text},
+    )
 
 
 @content_mcp.tool(
