@@ -2566,22 +2566,48 @@ async def content_blocks_list(post_id: int) -> List[Dict[str, Any]]:
     name="blocks_create",
     description="""Create a content block in a post.
 
-    Required: block_type (str, e.g. 'text', 'image', 'video', 'embed')
-    Optional: position (int), data_json (dict) - block-specific data
+    Required:
+      - block_type: one of 'text', 'quote', 'code', 'callout', 'embed'
+      - content: the block's body text (min 1 char)
+      - author_id, author_name: who created this block — typically your agent
+        name + a display label. The content-api uses these for per-block
+        attribution in multi-agent denkraum sessions.
+
+    Optional:
+      - position: insertion index (defaults to append at end via server-side max+1)
+      - metadata_json: freeform dict for agent tags, e.g.
+        {"agent": "codex", "reply_to": 42, "topic": "..."}.
+      - data_json: deprecated alias for metadata_json (kept for backwards compat).
+
+    Tier-1 append-only pattern: each block is its own DB row, so two agents
+    appending in parallel never overwrite each other. Use this as the primary
+    write path in multi-agent sessions; reach for posts_update only when you
+    need a consolidated single-content field.
     """,
 )
 async def content_blocks_create(
     post_id: int,
     block_type: str,
+    content: str,
+    author_id: str,
+    author_name: str,
     position: int = 0,
+    metadata_json: Optional[Dict[str, Any]] = None,
     data_json: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    body = {
+    # Backwards-compat: if caller still passes data_json and not metadata_json,
+    # treat it as the metadata payload. Once all callers migrate we can drop this.
+    if metadata_json is None and data_json is not None:
+        metadata_json = data_json
+    body: Dict[str, Any] = {
         "block_type": block_type,
+        "content": content,
         "position": position,
+        "author_id": author_id,
+        "author_name": author_name,
     }
-    if data_json:
-        body["data_json"] = data_json
+    if metadata_json is not None:
+        body["metadata_json"] = metadata_json
     return await call_content_api("POST", f"/api/v1/posts/{post_id}/blocks/", json_body=body)
 
 
@@ -2589,23 +2615,35 @@ async def content_blocks_create(
     name="blocks_update",
     description="""Update a content block. All fields optional.
 
+    Fields (all optional, only what you pass gets updated):
+      - block_type: 'text' | 'quote' | 'code' | 'callout' | 'embed'
+      - content: new body text (min 1 char)
+      - position: new index
+      - metadata_json: freeform dict (replaces existing)
+      - data_json: deprecated alias for metadata_json (kept for backwards compat)
+
     Optimistic concurrency: pass `expected_version` (from blocks_get/list) to
     gate the write. Server returns 409 with `current_version` + `current_block`
-    on mismatch.
+    on mismatch. Omit for last-writer-wins.
     """,
 )
 async def content_blocks_update(
     post_id: int,
     block_id: int,
     block_type: Optional[str] = None,
+    content: Optional[str] = None,
     position: Optional[int] = None,
+    metadata_json: Optional[Dict[str, Any]] = None,
     data_json: Optional[Dict[str, Any]] = None,
     expected_version: Optional[int] = None,
 ) -> Dict[str, Any]:
+    if metadata_json is None and data_json is not None:
+        metadata_json = data_json
     body = _clean_params(
         block_type=block_type,
+        content=content,
         position=position,
-        data_json=data_json,
+        metadata_json=metadata_json,
         expected_version=expected_version,
     )
     return await call_content_api("PUT", f"/api/v1/posts/{post_id}/blocks/{block_id}", json_body=body)
