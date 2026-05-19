@@ -2202,6 +2202,7 @@ async def content_posts_create(
     author_id: Optional[str] = None,
     author_name: Optional[str] = None,
     metadata_json: Optional[Dict[str, Any]] = None,
+    collab_enabled: Optional[bool] = None,
 ) -> Dict[str, Any]:
     body = _clean_params(
         title=title,
@@ -2216,6 +2217,7 @@ async def content_posts_create(
         author_id=author_id,
         author_name=author_name,
         metadata_json=metadata_json,
+        collab_enabled=collab_enabled,
     )
     return await call_content_api("POST", "/api/v1/posts/", json_body=body)
 
@@ -2242,6 +2244,7 @@ async def content_posts_update(
     author_name: Optional[str] = None,
     metadata_json: Optional[Dict[str, Any]] = None,
     expected_version: Optional[int] = None,
+    collab_enabled: Optional[bool] = None,
 ) -> Dict[str, Any]:
     body = _clean_params(
         title=title,
@@ -2252,6 +2255,7 @@ async def content_posts_update(
         author_name=author_name,
         metadata_json=metadata_json,
         expected_version=expected_version,
+        collab_enabled=collab_enabled,
     )
     return await call_content_api("PUT", f"/api/v1/posts/{post_id}", json_body=body)
 
