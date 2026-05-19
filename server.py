@@ -2684,30 +2684,52 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
 
 @content_mcp.tool(
     name="doc_apply_text",
-    description="""Write into a collab-text post's CRDT — replace, append, or prepend.
+    description="""Write into a collab-text post's CRDT — append, prepend,
+    replace, or **targeted edits at specific paragraphs**.
 
-    Use this when an agent wants to edit a `doc_type='collab_text'` post
-    without opening a WebSocket. All connected browser tabs / other
-    agents see the change instantly via the existing WS fan-out.
+    Use this when an agent wants to edit a `collab_enabled` post without
+    opening a WebSocket. All connected clients see the change instantly.
 
-    Modes:
+    ## Whole-doc modes
+
       - `replace` (default): swap the document's full content. Use when
-        you are the sole writer or have JUST read the state via
-        `doc_get_text`. Dangerous during human-agent collaboration —
-        will erase whatever the human just typed.
-      - `append`: insert your text at the END of the current content.
-        SAFE during human-agent collaboration — preserves the human's
-        live typing. Use for "and here's my contribution at the bottom".
-      - `prepend`: insert at the BEGINNING. Less common; useful for
-        adding a header/intro.
+        you are the sole writer or have JUST read the state. Dangerous
+        during human-agent collaboration — erases whatever the human
+        just typed.
+      - `append`: insert your text at the END.
+      - `prepend`: insert at the BEGINNING.
 
-    For surgical mid-document edits open a WebSocket and speak yjs.
-    This tool is the request/response path for LLM agents.
+    ## Targeted modes (V2.6 — surgical mid-document edits)
+
+    All targeted modes require fetching `doc_get_structured` FIRST so
+    you know paragraph indexes. They land your reply directly where it
+    belongs, instead of always at the doc tail.
+
+      - `insert_after_paragraph` + `paragraph_index`: new paragraph
+        appears immediately after the index-th block. `-1` = before
+        first paragraph (= prepend).
+      - `replace_paragraph` + `paragraph_index`: replace one paragraph.
+        Use for typo-fixes, rewording, refactoring a single block.
+      - `find_replace` + `find`: substitute first occurrence of `find`
+        anywhere in the doc with `text`. Returns 404 if not found.
+      - `update_paragraph_attrs` + `paragraph_index` + `attrs`: change
+        block-level attrs (e.g. force re-attribution) without touching
+        text. `text` is ignored.
+
+    Author attribution is automatic on every mode via the JWT — the
+    server stamps `author_id`/`author_name`/`author_color` on the
+    affected paragraphs. Browser-side `AuthorHighlight` renders the
+    color bar. No need to add inline markers in your text.
 
     Args:
         post_id: the collab-text post
-        text: the content to write
-        mode: 'replace' | 'append' | 'prepend' (default 'replace')
+        text: the content to write (ignored for `update_paragraph_attrs`)
+        mode: see options above (default 'replace')
+        paragraph_index: 0-based index — required for `*_paragraph` and
+            `update_paragraph_attrs` modes
+        find: substring to locate — required for `find_replace`
+        attrs: dict of paragraph attributes — required for
+            `update_paragraph_attrs`
 
     Returns:
         applied: bool — false if mode='replace' and text equals current
@@ -2718,13 +2740,60 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
 )
 async def content_doc_apply_text(
     post_id: int,
-    text: str,
+    text: str = "",
     mode: str = "replace",
+    paragraph_index: Optional[int] = None,
+    find: Optional[str] = None,
+    attrs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"text": text, "mode": mode}
+    if paragraph_index is not None:
+        body["paragraph_index"] = paragraph_index
+    if find is not None:
+        body["find"] = find
+    if attrs is not None:
+        body["attrs"] = attrs
     return await call_content_api(
         "POST",
         f"/api/v1/posts/{post_id}/crdt/apply",
-        json_body={"text": text, "mode": mode},
+        json_body=body,
+    )
+
+
+@content_mcp.tool(
+    name="doc_get_structured",
+    description="""Read a collab-text post as a structured paragraph list.
+
+    Unlike `doc_get_text` (which returns plain text), this returns each
+    paragraph with its block-level attribution + heading info — what an
+    agent needs to do **targeted edits** via `doc_apply_text` with
+    `insert_after_paragraph` / `replace_paragraph` / etc.
+
+    Use case: agent gets a chunk_committed push, decides to respond. To
+    land the reply directly UNDER the block it's responding to, fetch
+    this, find the target paragraph by author_id/text, then call
+    `doc_apply_text(mode='insert_after_paragraph', paragraph_index=...)`.
+
+    Args:
+        post_id: the collab-text post
+
+    Returns:
+        post_id: int
+        version: int — highest op-log seq
+        paragraphs: list of dicts, each with:
+            index: 0-based position
+            text: plain text content
+            author_id: 'agent:Name' or user UUID (null for pre-V2.2 content)
+            author_name: display name (null if no attribution)
+            author_color: 'hsl(...)' deterministic from author_id
+            is_heading: true if line starts with `#`/`##`/`###`
+            heading_level: 1/2/3 or null
+    """,
+)
+async def content_doc_get_structured(post_id: int) -> Dict[str, Any]:
+    return await call_content_api(
+        "GET",
+        f"/api/v1/posts/{post_id}/crdt/structured",
     )
 
 
