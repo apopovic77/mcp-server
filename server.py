@@ -194,16 +194,23 @@ async def _fetch_json(
 ) -> Any:
     async with httpx.AsyncClient(timeout=timeout or HTTP_TIMEOUT) as client:
         try:
+            # NOTE: pass `params` through as-is (don't coerce None → {}).
+            # httpx treats `params={}` as "replace the URL's query string
+            # with this empty dict" — i.e. it NUKES any ?key=val already
+            # baked into the URL. Tools that embed the query directly in
+            # the endpoint path (e.g. comm_gmail_list_messages,
+            # comm_gmail_latest) rely on the URL-side query surviving.
+            # `params=None` lets httpx leave the URL alone.
             if method == "GET":
-                response = await client.get(url, headers=headers, params=params or {})
+                response = await client.get(url, headers=headers, params=params)
             elif method == "POST":
-                response = await client.post(url, headers=headers, params=params or {}, json=json_body or {})
+                response = await client.post(url, headers=headers, params=params, json=json_body or {})
             elif method == "PUT":
-                response = await client.put(url, headers=headers, params=params or {}, json=json_body or {})
+                response = await client.put(url, headers=headers, params=params, json=json_body or {})
             elif method == "PATCH":
-                response = await client.patch(url, headers=headers, params=params or {}, json=json_body or {})
+                response = await client.patch(url, headers=headers, params=params, json=json_body or {})
             elif method == "DELETE":
-                response = await client.delete(url, headers=headers, params=params or {})
+                response = await client.delete(url, headers=headers, params=params)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -6313,8 +6320,15 @@ async def comm_gmail_list_messages(
     query: str = "",
     max_results: int = 10,
 ) -> Dict[str, Any]:
-    params = f"?query={query}&max_results={max_results}" if query else f"?max_results={max_results}"
-    return await call_comm_api("GET", f"/api/v1/gmail/{source}/messages{params}")
+    # Build params dict instead of concatenating into the URL — httpx
+    # handles URL-encoding (colons in `from:`, @-signs in emails, etc.)
+    # and Tommy's bug-report (query + max_results silently dropped) was
+    # caused by the previous string-concat path interacting with the
+    # `params or {}` bug in _fetch_json.
+    params: Dict[str, Any] = {"max_results": max_results}
+    if query:
+        params["query"] = query
+    return await call_comm_api("GET", f"/api/v1/gmail/{source}/messages", params=params)
 
 
 @comm_mcp.tool(
@@ -6358,8 +6372,11 @@ async def comm_gmail_get_attachment(
     ),
 )
 async def comm_gmail_latest(source: str, query: str = "") -> Dict[str, Any]:
-    params = f"?query={query}" if query else ""
-    return await call_comm_api("GET", f"/api/v1/gmail/{source}/latest{params}")
+    # Same robustness fix as comm_gmail_list_messages: pass params via
+    # the dict argument so httpx handles URL-encoding and so the URL
+    # query string survives _fetch_json's request-building.
+    params: Optional[Dict[str, Any]] = {"query": query} if query else None
+    return await call_comm_api("GET", f"/api/v1/gmail/{source}/latest", params=params)
 
 
 @comm_mcp.tool(
