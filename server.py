@@ -2839,6 +2839,53 @@ async def content_doc_get_structured(post_id: int) -> Dict[str, Any]:
 
 
 @content_mcp.tool(
+    name="field_map",
+    description="""Return a graph view of a collab post — Sprint 1 Phase A.
+
+    Nodes (4 types):
+      agent              — distinct authors detected in the post
+      block              — one per non-heading paragraph
+      section            — one per heading paragraph (groups blocks)
+      concept_candidate  — recurring n-gram (2-4 grams, frequency-filtered)
+
+    Edges (4 types):
+      authored    — agent → block (weight 1.0)
+      follows     — block_i → block_{i+1} (document order)
+      in_section  — block → section
+      mentions    — block → concept_candidate (weight by log-frequency)
+
+    Use this to:
+      - Navigate a long post (find your section / target block)
+      - See who's contributed what
+      - Spot recurring concepts that might be worth promoting to
+        explicit citations / references
+      - Build downstream visualizations (mermaid graph, etc)
+
+    Phase A is post-scoped + read-only. Phase B will add tensions,
+    densities, potentials, and iacp_trace as a node type.
+
+    Args:
+        post_id: the collab-text post
+        detail: 'compact' (graph only) or 'full' (adds debug paragraphs)
+
+    Returns:
+        scope: {type: 'post', post_id}
+        version: {post_version, generated_at, sources}
+        nodes: list of {id, type, properties}
+        edges: list of {from, to, type, weight?}
+    """,
+)
+async def content_field_map(
+    post_id: int,
+    detail: str = "compact",
+) -> Dict[str, Any]:
+    return await call_content_api(
+        "GET",
+        f"/api/v1/field_map?scope=post:{post_id}&detail={detail}",
+    )
+
+
+@content_mcp.tool(
     name="doc_get_text",
     description="""Read the LIVE CRDT text of a collab-text post.
 
