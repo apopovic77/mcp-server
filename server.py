@@ -559,11 +559,17 @@ async def call_comm_api(
     json_body: Optional[Dict[str, Any]] = None,
     timeout: float = 120.0,
 ) -> Any:
-    """Call Comm API for email, telegram, and unified messaging."""
+    """Call Comm API for email, telegram, and unified messaging.
+
+    Forwards the caller's JWT (set by JWTAuthMiddleware via ContextVar)
+    so comm-api can enforce per-source authorization based on the agent
+    or user identity. Falls back to the static X-API-KEY when no caller
+    JWT is in context (background jobs, legacy direct callers).
+    """
     return await _fetch_json(
         method,
         f"{COMM_API_BASE}{endpoint}",
-        headers={"X-API-Key": COMM_API_KEY},
+        headers=_caller_auth_headers(api_key_fallback=COMM_API_KEY),
         params=params,
         json_body=json_body,
         timeout=timeout,
