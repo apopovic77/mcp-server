@@ -2840,7 +2840,9 @@ async def content_doc_get_structured(post_id: int) -> Dict[str, Any]:
 
 @content_mcp.tool(
     name="field_map",
-    description="""Return a graph view of a collab post — Sprint 1 Phase A.
+    description="""Return a graph view of a collab post — Sprint 1.
+
+    ## Phase A (always returned)
 
     Nodes (4 types):
       agent              — distinct authors detected in the post
@@ -2854,25 +2856,49 @@ async def content_doc_get_structured(post_id: int) -> Dict[str, Any]:
       in_section  — block → section
       mentions    — block → concept_candidate (weight by log-frequency)
 
-    Use this to:
-      - Navigate a long post (find your section / target block)
-      - See who's contributed what
-      - Spot recurring concepts that might be worth promoting to
-        explicit citations / references
-      - Build downstream visualizations (mermaid graph, etc)
+    ## Phase B (when detail='metrics')
 
-    Phase A is post-scoped + read-only. Phase B will add tensions,
-    densities, potentials, and iacp_trace as a node type.
+    Adds derived metrics on Phase A graph:
+
+    NEW NODES:
+      tension — open question detected in block text. Properties:
+        {kind:'open_question', block_index, author_id, text,
+         resolution_status:'unresolved', derived_from: [block-ids]}
+
+    NEW EDGES:
+      exposes_tension — block → tension
+
+    NEW PROPERTIES on existing section nodes:
+      density = {char_count, n_authors, n_blocks}
+      potential = {author_shares: {agent_id: weighted-share},
+                   diffusion: 0..1 (normalized Shannon entropy),
+                   dominance_score: 0..1 (max share),
+                   dominant_author_id}
+      derived_from = [block-ids that fed the metrics]
+
+    NEW TOP-LEVEL field `metrics`:
+      tensions_count, open_questions list, sections_by_density (top 5),
+      sections_by_dominance (top 5)
+
+    Phase B is a pure derived layer on Phase A — no external data
+    (iacp_trace etc) consulted, per Codex spec dfaf43af.
+
+    ## Use cases
+
+    Phase A: navigate, find target block by author/content, spot
+    recurring concepts.
+    Phase B: detect where the field needs attention (open questions,
+    high-dominance sections that need diverse input, high-density
+    sections that are mature). Feeds into Sprint 2 Drift-Compass.
 
     Args:
         post_id: the collab-text post
-        detail: 'compact' (graph only) or 'full' (adds debug paragraphs)
+        detail: 'compact' (Phase A graph only) or 'full' (+ debug
+                paragraphs) or 'metrics' (Phase A + Phase B)
 
     Returns:
-        scope: {type: 'post', post_id}
-        version: {post_version, generated_at, sources}
-        nodes: list of {id, type, properties}
-        edges: list of {from, to, type, weight?}
+        scope, version (with sources), nodes, edges,
+        metrics? (when detail='metrics')
     """,
 )
 async def content_field_map(
