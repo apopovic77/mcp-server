@@ -5905,8 +5905,9 @@ Available templates (pass as 'template' param):
 
     - arkturian box: "arkturian" (SMTP, alex@arkturian.com),
       "apopovic" (Gmail API, apopovic.aut@gmail.com),
-      "edera" (Gmail API, a.popovic@edera-safety.com), plus any other
-      source configured via SOURCES + GMAIL_REFRESH_TOKEN_* env vars.
+      "edera" (Gmail API, a.popovic@edera-safety.com),
+      "tsaier" (Gmail API, t.saier@edera-safety.com),
+      plus any other source configured via SOURCES + GMAIL_REFRESH_TOKEN_* env vars.
 
     - pdrei box: only "jascha" (Gmail API,
       jascha.popovic@bellevue-living.net) is wired. pdrei BLOCKS
@@ -6311,8 +6312,12 @@ async def comm_gmail_list_accounts() -> Dict[str, Any]:
     name="gmail_list_messages",
     description=(
         "List emails for a Gmail account. "
-        "Source: 'apopovic' (apopovic.aut@gmail.com) or 'edera' (a.popovic@edera-safety.com). "
-        "Query examples: 'is:unread', 'from:someone@email.com', 'subject:Rechnung', 'newer_than:1d'."
+        "Sources (arkturian deployment): 'apopovic' (apopovic.aut@gmail.com), "
+        "'edera' (a.popovic@edera-safety.com), 'tsaier' (t.saier@edera-safety.com). "
+        "On pdrei: 'jascha' (jascha.popovic@bellevue-living.net). "
+        "Use gmail_list_accounts to see what's currently configured on the instance. "
+        "Query examples: 'is:unread', 'from:someone@email.com', 'subject:Rechnung', "
+        "'newer_than:1d', 'in:sent', 'label:DIHA'."
     ),
 )
 async def comm_gmail_list_messages(
@@ -6368,7 +6373,9 @@ async def comm_gmail_get_attachment(
     name="gmail_latest",
     description=(
         "Get the most recent email for a Gmail account. "
-        "Source: 'apopovic' or 'edera'. Optional query filter."
+        "Sources (arkturian deployment): 'apopovic', 'edera', 'tsaier'. "
+        "On pdrei: 'jascha'. Optional query filter — same syntax as "
+        "gmail_list_messages (e.g. 'from:weidinger', 'in:sent', 'newer_than:1d')."
     ),
 )
 async def comm_gmail_latest(source: str, query: str = "") -> Dict[str, Any]:
@@ -6383,9 +6390,11 @@ async def comm_gmail_latest(source: str, query: str = "") -> Dict[str, Any]:
     name="gmail_send",
     description=(
         "Send an email via Gmail. "
-        "Source identifies which Gmail account sends. Available sources depend on the deployment "
-        "(e.g. 'apopovic' = apopovic.aut@gmail.com, 'edera' = a.popovic@edera-safety.com, "
-        "'jascha' = jascha.popovic@bellevue-living.net on pdrei)."
+        "Source identifies which Gmail account sends. Available sources depend on the deployment: "
+        "arkturian: 'apopovic' = apopovic.aut@gmail.com, 'edera' = a.popovic@edera-safety.com, "
+        "'tsaier' = t.saier@edera-safety.com. "
+        "pdrei: 'jascha' = jascha.popovic@bellevue-living.net. "
+        "Use gmail_list_accounts to see what's currently configured."
     ),
 )
 async def comm_gmail_send(
@@ -6420,7 +6429,8 @@ async def comm_gmail_mark_unread(source: str, message_id: str) -> Dict[str, Any]
     name="calendar_list_events",
     description=(
         "List upcoming Google Calendar events. "
-        "Source: 'apopovic' or 'edera'. "
+        "Sources (arkturian deployment): 'apopovic', 'edera', 'tsaier'. "
+        "On pdrei: 'jascha'. "
         "Optional: time_min/time_max (ISO format), max_results."
     ),
 )
@@ -6438,7 +6448,8 @@ async def comm_calendar_list_events(
     name="calendar_create_event",
     description=(
         "Create a Google Calendar event. "
-        "Source: 'apopovic' or 'edera'. "
+        "Sources (arkturian deployment): 'apopovic', 'edera', 'tsaier'. "
+        "On pdrei: 'jascha'. "
         "start/end: ISO datetime 'YYYY-MM-DDTHH:MM:SS' or date 'YYYY-MM-DD' for all-day. "
         "attendees: list of email addresses (optional, sends invite). "
         "google_meet: set True to auto-generate a Google Meet video link."
