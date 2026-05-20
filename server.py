@@ -2715,21 +2715,46 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
       - `update_paragraph_attrs` + `paragraph_index` + `attrs`: change
         block-level attrs (e.g. force re-attribution) without touching
         text. `text` is ignored.
+      - `delete_paragraph` + `paragraph_index`: remove one paragraph
+        cleanly. Use this instead of replace-with-placeholder for
+        cleanup. `text` is ignored.
+
+    ## V2.7 concurrency + author guards (optional)
+
+    Pass these to prevent races / accidental cross-author overwrites:
+      - `expected_version`: int — only apply if current op-log seq
+        matches. On mismatch → 409 with body { current_version,
+        current_text }. Use for whole-doc replace/append/prepend/
+        find_replace/delete_paragraph.
+      - `expected_author`: string — only apply if the target
+        paragraph's existing author_id matches. Use for
+        replace_paragraph + delete_paragraph when a script
+        reprocesses content that may have been edited by someone
+        else. On mismatch → 409 with body { current_author,
+        paragraph_index }.
 
     Author attribution is automatic on every mode via the JWT — the
     server stamps `author_id`/`author_name`/`author_color` on the
     affected paragraphs. Browser-side `AuthorHighlight` renders the
     color bar. No need to add inline markers in your text.
 
+    Idempotency: `replace_paragraph` with text identical to the current
+    paragraph's text AND matching author → no-op (no Yjs op, no
+    author-overwrite, no push fired). Prevents script-replay-induced
+    audit-trail corruption.
+
     Args:
         post_id: the collab-text post
-        text: the content to write (ignored for `update_paragraph_attrs`)
+        text: the content to write (ignored for `update_paragraph_attrs`
+            and `delete_paragraph`)
         mode: see options above (default 'replace')
         paragraph_index: 0-based index — required for `*_paragraph` and
-            `update_paragraph_attrs` modes
+            `update_paragraph_attrs`, `delete_paragraph` modes
         find: substring to locate — required for `find_replace`
         attrs: dict of paragraph attributes — required for
             `update_paragraph_attrs`
+        expected_version: optimistic-lock guard (see above)
+        expected_author: author-aware guard (see above)
 
     Returns:
         applied: bool — false if mode='replace' and text equals current
@@ -2745,7 +2770,19 @@ async def content_doc_apply_text(
     paragraph_index: Optional[int] = None,
     find: Optional[str] = None,
     attrs: Optional[Dict[str, Any]] = None,
+    expected_version: Optional[int] = None,
+    expected_author: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Write into a collab-text CRDT post. See tool description for modes.
+
+    V2.7 added:
+      - `delete_paragraph` mode for clean removal (no placeholder needed)
+      - `expected_version` for optimistic-lock on whole-doc replace/append/
+        prepend/find_replace/delete_paragraph — 409 on mismatch
+      - `expected_author` for author-aware replace_paragraph and
+        delete_paragraph — 409 if target's author differs (prevents
+        accidental cross-author overwrites)
+    """
     body: Dict[str, Any] = {"text": text, "mode": mode}
     if paragraph_index is not None:
         body["paragraph_index"] = paragraph_index
@@ -2753,6 +2790,10 @@ async def content_doc_apply_text(
         body["find"] = find
     if attrs is not None:
         body["attrs"] = attrs
+    if expected_version is not None:
+        body["expected_version"] = expected_version
+    if expected_author is not None:
+        body["expected_author"] = expected_author
     return await call_content_api(
         "POST",
         f"/api/v1/posts/{post_id}/crdt/apply",
