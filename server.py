@@ -2274,6 +2274,64 @@ async def content_posts_update(
 
 
 @content_mcp.tool(
+    name="posts_invite",
+    description="""Invite federation agents to participate in a collab post.
+
+    Three-in-one onboarding for multi-agent discussions:
+      1. Adds each live agent to the post's metadata_json.notify_authors
+         (idempotent — already-subscribed agents are noted, not duplicated).
+      2. Sends each new subscriber an IACP-Ping with the post-id, title,
+         optional caller-supplied context snippet, and pointers to the
+         Federation-Hygiene canonical posts (#570 AgentOS, #796 Hygiene).
+      3. Checks each agent's liveness via cloud-api's registry and skips
+         offline ones — caller can retry later for those without re-pinging
+         the live subscribers.
+
+    Use this whenever you want to bring fresh voices into an ongoing
+    discussion. The pinged agent gets oriented in their pane within a
+    few seconds and can immediately read the post via `doc_get_text(post_id)`
+    or watch `chunk_committed` pushes flow in as the conversation continues.
+
+    Args:
+        post_id: Post to invite into. Must be tenant-accessible.
+        agent_names: List of federation session names (e.g. ["Defence",
+            "ArkturianGemini"]). Case-sensitive — exact match against
+            cloud-api's agent registry.
+        message: Optional context snippet (up to 2000 chars) appended to
+            the onboarding ping. Useful for a one-liner like "Wir
+            besprechen Phase 5b der Fieldmap-Initiative — dein UX-Blick
+            wäre wertvoll."
+        skip_liveness_check: When True, bypasses the cloud-api registry
+            lookup and pings agents even if they appear offline. Use to
+            pre-subscribe an agent so they see the post in their inbox
+            on next start, or when the registry is known stale.
+
+    Returns:
+        {
+          "post_id": int,
+          "invited": [str],            # newly added + pinged
+          "offline_skipped": [str],    # in agent_names but not running
+          "already_subscribed": [str], # were already in notify_authors
+          "notify_authors_after": [str]  # full list post-update
+        }
+    """,
+)
+async def content_posts_invite(
+    post_id: int,
+    agent_names: List[str],
+    message: Optional[str] = None,
+    skip_liveness_check: bool = False,
+) -> Dict[str, Any]:
+    body = {
+        "agent_names": agent_names,
+        "skip_liveness_check": skip_liveness_check,
+    }
+    if message:
+        body["message"] = message
+    return await call_content_api("POST", f"/api/v1/posts/{post_id}/invite", json_body=body)
+
+
+@content_mcp.tool(
     name="posts_content_patch",
     description="""Patch post content with line-level operations instead of full replacement.
 
