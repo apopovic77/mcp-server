@@ -142,6 +142,10 @@ CONVERSATION_API_BASE = os.getenv(
 CONVERSATION_API_KEY = os.getenv("CONVERSATION_API_KEY", "").strip()
 CLOUD_PATH = "/cloud"
 CONVERSATION_PATH = "/conversation"
+
+# Issue API (AgentOS Issue-Tracking)
+ISSUE_API_BASE = os.getenv("ISSUE_API_BASE", "https://issue-api.arkturian.com")
+ISSUE_PATH = "/issue"
 # Shared secret for cross-node IACP role addressing. Must match IACP_TOKEN
 # env on every cloud-api in the federation. Used by send_to_role().
 IACP_TOKEN = os.getenv("IACP_TOKEN", "").strip()
@@ -533,6 +537,25 @@ async def call_tree_api(
     return await _fetch_json(
         method,
         f"{TREE_API_BASE}{endpoint}",
+        headers=_caller_auth_headers(),
+        params=params,
+        json_body=json_body,
+    )
+
+
+async def call_issue_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call Issue API. Forwards caller's JWT so issue-api sees the real agent
+    identity + tenant. Anon callers get rejected by upstream.
+    """
+    return await _fetch_json(
+        method,
+        f"{ISSUE_API_BASE}{endpoint}",
         headers=_caller_auth_headers(),
         params=params,
         json_body=json_body,
@@ -7463,6 +7486,220 @@ conversation_app = conversation_mcp.streamable_http_app()
 mount_mcp("conversation", CONVERSATION_PATH, conversation_app)
 
 
+# Issue API MCP --------------------------------------------------------------
+issue_mcp = FastMCP(
+    name="issue-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    auth=None,
+    log_level="INFO",
+)
+
+
+@issue_mcp.tool(
+    name="create",
+    description="""Create an issue from a free-text description.
+
+    The Issue API extracts title / severity / component / tags via AI in ~2s.
+    Use this when reporting a bug or observation in natural language.
+
+    Parameters:
+      - description (required): the bug report in free text (your own language).
+      - screenshot_storage_id (optional): id from storage-api upload, attached
+        as an IssueAttachment with role='screenshot'.
+
+    Returns: {id, title, severity, component, tags, ai_confidence, url}.
+    """,
+)
+async def issue_create(
+    description: str,
+    screenshot_storage_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"text": description}
+    if screenshot_storage_id is not None:
+        body["screenshot_storage_id"] = screenshot_storage_id
+    return await call_issue_api("POST", "/api/v1/issues/intake", json_body=body)
+
+
+@issue_mcp.tool(
+    name="create_structured",
+    description="""Create an issue with full control over fields — no AI extraction.
+
+    Use when you already know the structure (e.g. fix-confirmation issues,
+    automated reports). For free-text bug-reports use `create` instead.
+
+    Required: title, description.
+    Optional: severity (critical|major|minor|cosmetic, default minor),
+      component, tags, file_pointer, assignee, status (default open).
+    """,
+)
+async def issue_create_structured(
+    title: str,
+    description: str,
+    severity: str = "minor",
+    component: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    file_pointer: Optional[str] = None,
+    assignee: Optional[str] = None,
+    status: str = "open",
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
+        "title": title,
+        "description": description,
+        "severity": severity,
+        "status": status,
+    }
+    if component is not None:
+        body["component"] = component
+    if tags is not None:
+        body["tags"] = tags
+    if file_pointer is not None:
+        body["file_pointer"] = file_pointer
+    if assignee is not None:
+        body["assignee"] = assignee
+    return await call_issue_api("POST", "/api/v1/issues", json_body=body)
+
+
+@issue_mcp.tool(
+    name="list",
+    description="""List issues with optional filters. Caller's tenant is auto-applied.
+
+    Filters (all optional): status (open|in_progress|fixed|deferred|closed|
+    duplicate|wontfix), severity (critical|major|minor|cosmetic), component,
+    assignee, q (full-text search across title+description), limit (default 20,
+    max 200), offset.
+
+    Returns: {items: [...], total, limit, offset}.
+    """,
+)
+async def issue_list(
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    component: Optional[str] = None,
+    assignee: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    params = _clean_params(
+        status=status,
+        severity=severity,
+        component=component,
+        assignee=assignee,
+        q=q,
+        limit=limit,
+        offset=offset,
+    )
+    return await call_issue_api("GET", "/api/v1/issues", params=params)
+
+
+@issue_mcp.tool(
+    name="get",
+    description="""Get full issue detail by ID — includes attachments + comments.""",
+)
+async def issue_get(id: int) -> Dict[str, Any]:
+    return await call_issue_api("GET", f"/api/v1/issues/{id}")
+
+
+@issue_mcp.tool(
+    name="update",
+    description="""Partial update of an issue. All fields optional.
+
+    Updatable: title, description, severity, status, component, tags (list),
+    file_pointer, assignee, duplicate_of, metadata_json.
+
+    Tenant-isolation: only the issue's tenant can update; cross-tenant → 404.
+    """,
+)
+async def issue_update(
+    id: int,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    component: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    file_pointer: Optional[str] = None,
+    assignee: Optional[str] = None,
+    duplicate_of: Optional[int] = None,
+    metadata_json: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    body = _clean_params(
+        title=title,
+        description=description,
+        severity=severity,
+        status=status,
+        component=component,
+        tags=tags,
+        file_pointer=file_pointer,
+        assignee=assignee,
+        duplicate_of=duplicate_of,
+        metadata_json=metadata_json,
+    )
+    return await call_issue_api("PATCH", f"/api/v1/issues/{id}", json_body=body)
+
+
+@issue_mcp.tool(
+    name="resolve",
+    description="""Mark an issue as resolved (fixed / wontfix / duplicate / closed).
+
+    Required: id, commit (resolution commit hash or pointer), summary.
+    Optional: status (default 'fixed').
+
+    Sets fixed_at=now, fixed_by=caller, resolution_commit, resolution_summary.
+    """,
+)
+async def issue_resolve(
+    id: int,
+    commit: str,
+    summary: str,
+    status: str = "fixed",
+) -> Dict[str, Any]:
+    body = {
+        "resolution_commit": commit,
+        "resolution_summary": summary,
+        "status": status,
+    }
+    return await call_issue_api("POST", f"/api/v1/issues/{id}/resolve", json_body=body)
+
+
+@issue_mcp.tool(
+    name="search",
+    description="""Full-text + tag search across issues in caller's tenant.
+
+    Required: query (matches title+description). Optional: tags (list of tag
+    strings, currently OR-matched via q-fallback), limit (default 10).
+
+    Convenience wrapper around `list(q=...)`.
+    """,
+)
+async def issue_search(
+    query: str,
+    tags: Optional[List[str]] = None,
+    limit: int = 10,
+) -> Dict[str, Any]:
+    params = _clean_params(q=query, limit=limit)
+    if tags:
+        # The backend's q does a LIKE across title+description; tag filtering
+        # would need a dedicated parameter on issue-api. For now we just
+        # forward q and let the caller filter the result by tags client-side
+        # if needed. Reported as future enhancement.
+        params["q"] = " ".join([query, *tags])
+    return await call_issue_api("GET", "/api/v1/issues", params=params)
+
+
+@issue_mcp.tool(
+    name="comment",
+    description="""Add a comment to an issue. Author taken from caller's JWT.""",
+)
+async def issue_comment(id: int, body: str) -> Dict[str, Any]:
+    return await call_issue_api("POST", f"/api/v1/issues/{id}/comments", json_body={"body": body})
+
+
+issue_app = issue_mcp.streamable_http_app()
+mount_mcp("issue", ISSUE_PATH, issue_app)
+
+
 _storage_stack = AsyncExitStack()
 _oneal_stack = AsyncExitStack()
 _oneal_storage_stack = AsyncExitStack()
@@ -7479,6 +7716,7 @@ _review_stack = AsyncExitStack()
 _story_stack = AsyncExitStack()
 _cloud_stack = AsyncExitStack()
 _conversation_stack = AsyncExitStack()
+_issue_stack = AsyncExitStack()
 
 
 # Track which MCP sessions were started (for shutdown ordering)
@@ -7504,6 +7742,7 @@ def _all_mcps():
         ("story", _story_stack, story_mcp),
         ("cloud", _cloud_stack, cloud_mcp),
         ("conversation", _conversation_stack, conversation_mcp),
+        ("issue", _issue_stack, issue_mcp),
     ]
 
 
@@ -7616,6 +7855,12 @@ async def root() -> Dict[str, Any]:
                 "tools": [tool.name for tool in review_mcp._tool_manager.list_tools()],
                 "upstream": REVIEW_API_BASE,
                 "description": "AI-powered multi-perspective review orchestrator for websites, documents, presentations, and content",
+            },
+            "issue": {
+                "path": ISSUE_PATH,
+                "tools": [tool.name for tool in issue_mcp._tool_manager.list_tools()],
+                "upstream": ISSUE_API_BASE,
+                "description": "AgentOS Issue-Tracking — create, list, update, resolve issues via free-text intake (AI-classified) or structured input",
             },
         },
     }
