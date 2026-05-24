@@ -219,6 +219,11 @@ async def _fetch_json(
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
             response.raise_for_status()
+            # 204 No Content (e.g. DELETE) has no body — return empty dict
+            # so MCP wrappers don't crash on json() with "Expecting value:
+            # line 1 column 1 (char 0)".
+            if response.status_code == 204 or not response.content:
+                return {}
             return response.json()
         except httpx.HTTPStatusError as exc:
             # Surface the upstream response body to the caller — the default
@@ -2624,8 +2629,9 @@ async def content_media_delete(post_id: int, media_id: int) -> Dict[str, Any]:
     name="annotations_list",
     description="""List annotations for a post.
 
-    Annotations are metadata markers on content (highlights, comments, tags).
-    Returns: id, annotation_type, target_selector, body_json, created_at
+    Annotations are char-range comments on the post's materialized text.
+    Returns each annotation with: id, parent_id, start_pos, end_pos,
+    note_text, author_id, author_name, created_at, updated_at, replies.
     """,
 )
 async def content_annotations_list(post_id: int) -> List[Dict[str, Any]]:
@@ -2634,25 +2640,49 @@ async def content_annotations_list(post_id: int) -> List[Dict[str, Any]]:
 
 @content_mcp.tool(
     name="annotations_create",
-    description="""Create an annotation on a post.
+    description="""Create an annotation (inline comment) on a post.
 
-    Required: annotation_type (str), target_selector (dict)
-    Optional: body_json (dict) - annotation content/metadata
+    Char-range model: start_pos / end_pos are 0-based offsets into the
+    post's MATERIALIZED text (the same string you get from GET
+    /api/v1/posts/{id}/crdt/text — NOT the raw markdown). Typical flow
+    for an agent that wants to comment on a phrase:
+
+      1. GET /crdt/text → materialized
+      2. start = materialized.find(phrase); end = start + len(phrase)
+      3. annotations_create(post_id, start_pos=start, end_pos=end,
+                            note_text="...", author_id="agent:Yours",
+                            author_name="Yours")
+
+    Required: start_pos (int >= 0), end_pos (int > start_pos), note_text
+    (non-empty), author_id (e.g. "agent:Cloud" or "user:<uuid>"),
+    author_name (display).
+    Optional: parent_id (int) — for threaded replies.
+
+    Server-side: fires a chunk_committed push with trigger='annotation'
+    to all notify_authors on the post.
     """,
 )
 async def content_annotations_create(
     post_id: int,
-    annotation_type: str,
-    target_selector: Dict[str, Any],
-    body_json: Optional[Dict[str, Any]] = None,
+    start_pos: int,
+    end_pos: int,
+    note_text: str,
+    author_id: str,
+    author_name: str,
+    parent_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    body = {
-        "annotation_type": annotation_type,
-        "target_selector": target_selector,
+    body: Dict[str, Any] = {
+        "start_pos": start_pos,
+        "end_pos": end_pos,
+        "note_text": note_text,
+        "author_id": author_id,
+        "author_name": author_name,
     }
-    if body_json:
-        body["body_json"] = body_json
-    return await call_content_api("POST", f"/api/v1/posts/{post_id}/annotations/", json_body=body)
+    if parent_id is not None:
+        body["parent_id"] = parent_id
+    return await call_content_api(
+        "POST", f"/api/v1/posts/{post_id}/annotations/", json_body=body,
+    )
 
 
 @content_mcp.tool(
