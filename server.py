@@ -107,6 +107,7 @@ BUSINESS_PATH = "/business"
 COMM_PATH = "/comm"
 KNOWLEDGE_PATH = "/knowledge"
 STORY_PATH = "/story"
+LOG_PATH = "/log"
 
 # Tools API (for Tarot)
 TOOLS_API_BASE = os.getenv("TOOLS_API_BASE", "https://tools-api.arkturian.com")
@@ -125,6 +126,9 @@ STORY_API_KEY = os.getenv("STORY_API_KEY", "story_ark_secret_2025")
 
 # Knowledge API
 KNOWLEDGE_API_BASE = os.getenv("KNOWLEDGE_API_BASE", "https://knowledge-api.arkturian.com")
+
+# Log API — remote logging service (FastAPI + SQLite + WebSocket, 48h retention)
+LOG_API_BASE = os.getenv("LOG_API_BASE", "https://log-api.arkturian.com")
 
 # Review API
 REVIEW_API_BASE = os.getenv("REVIEW_API_BASE", "https://review-api.arkturian.com")
@@ -416,6 +420,25 @@ async def call_knowledge_api(
     return await _fetch_json(
         method,
         f"{KNOWLEDGE_API_BASE}{endpoint}",
+        headers={},
+        params=params,
+        json_body=json_body,
+        timeout=timeout,
+    )
+
+
+async def call_log_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    timeout: Optional[float] = None,
+) -> Any:
+    """Call Log API (no auth required — write-open, 48h retention)."""
+    return await _fetch_json(
+        method,
+        f"{LOG_API_BASE}{endpoint}",
         headers={},
         params=params,
         json_body=json_body,
@@ -4824,6 +4847,178 @@ async def knowledge_collection_ask(
 
 knowledge_app = knowledge_mcp.streamable_http_app()
 mount_mcp("knowledge", KNOWLEDGE_PATH, knowledge_app)
+
+# --------------------------------------------------------------------------- #
+# Log MCP — remote logging service (log-api.arkturian.com)
+# --------------------------------------------------------------------------- #
+#
+# Backs the 48h-retention FastAPI+SQLite+WebSocket log-api. Agents that
+# observe an external app (Unity, Web, CLI) read fresh errors here without
+# leaving the federation. Push side is also exposed for completeness but
+# the typical pattern is push-from-the-app, read-from-the-agent.
+log_mcp = FastMCP(
+    name="log-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@log_mcp.tool(
+    name="log_latest",
+    description="""Get the most recent logs from the *latest* session.
+
+    Filters (all optional):
+    - type: filter by log type (Log, Warning, Error, Exception)
+    - source: filter by source/component name
+    - search: free-text substring match on message
+    - limit: max entries returned (default 100)
+
+    Typical use: "what just went wrong in <whatever>" — returns the
+    freshest entries from the most-recent session without having to
+    discover its session_id first.""",
+)
+async def log_latest(
+    type: Optional[str] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+) -> Any:
+    params: Dict[str, Any] = {"limit": limit}
+    if type:
+        params["type"] = type
+    if source:
+        params["source"] = source
+    if search:
+        params["search"] = search
+    return await call_log_api("GET", "/api/v1/sessions/latest/logs", params=params)
+
+
+@log_mcp.tool(
+    name="log_sessions_list",
+    description="""List all known log-api sessions (newest first).
+
+    Each session represents one observed app/run instance. Returns id,
+    name, created_at, log counts per level. Use this to discover which
+    session_id to pull logs from when log_latest is too narrow.""",
+)
+async def log_sessions_list() -> Any:
+    return await call_log_api("GET", "/api/v1/sessions")
+
+
+@log_mcp.tool(
+    name="log_session_logs",
+    description="""Get logs for a specific session_id.
+
+    Useful when investigating an older session that isn't the latest.
+    Same `type`/`source`/`search`/`limit` filter semantics as
+    log_latest.""",
+)
+async def log_session_logs(
+    session_id: str,
+    type: Optional[str] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+) -> Any:
+    params: Dict[str, Any] = {"limit": limit}
+    if type:
+        params["type"] = type
+    if source:
+        params["source"] = source
+    if search:
+        params["search"] = search
+    return await call_log_api(
+        "GET", f"/api/v1/sessions/{session_id}/logs", params=params,
+    )
+
+
+@log_mcp.tool(
+    name="log_session_get",
+    description="Get metadata for a single session (created_at, name, log "
+                "counts, last_seen).",
+)
+async def log_session_get(session_id: str) -> Any:
+    return await call_log_api("GET", f"/api/v1/sessions/{session_id}")
+
+
+@log_mcp.tool(
+    name="log_stats",
+    description="""Quick stats across the last 24h: sessions seen, total
+    log entries by level, top error sources. Use as a first-glance health
+    check before drilling into specific sessions.""",
+)
+async def log_stats() -> Any:
+    return await call_log_api("GET", "/api/v1/stats")
+
+
+@log_mcp.tool(
+    name="log_session_create",
+    description="""Create a new log session. Returns the new session_id.
+
+    Body fields:
+    - name: human-readable label for the session
+    - source: optional source/component name (e.g. "unity", "web", "cli")
+    - metadata: optional dict of extra fields
+
+    Most apps create their own session via direct HTTP POST at startup —
+    this MCP path is primarily for one-off scripted runs.""",
+)
+async def log_session_create(
+    name: str,
+    source: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    body: Dict[str, Any] = {"name": name}
+    if source:
+        body["source"] = source
+    if metadata:
+        body["metadata"] = metadata
+    return await call_log_api("POST", "/api/v1/sessions", json_body=body)
+
+
+@log_mcp.tool(
+    name="log_push",
+    description="""Push a batch of log entries to a session.
+
+    Body fields:
+    - session_id: target session
+    - entries: list of {type, source, message, timestamp?} dicts.
+      type: Log | Warning | Error | Exception.
+
+    Returns count of accepted entries.""",
+)
+async def log_push(
+    session_id: str,
+    entries: List[Dict[str, Any]],
+) -> Any:
+    return await call_log_api(
+        "POST",
+        f"/api/v1/sessions/{session_id}/logs",
+        json_body=entries,
+    )
+
+
+@log_mcp.tool(
+    name="log_session_profiling",
+    description="Profiling data for a session (if recorded by the app).",
+)
+async def log_session_profiling(session_id: str) -> Any:
+    return await call_log_api(
+        "GET", f"/api/v1/sessions/{session_id}/profiling",
+    )
+
+
+@log_mcp.tool(
+    name="log_service_health",
+    description="Health check of the log-api itself (ping).",
+)
+async def log_service_health() -> Any:
+    return await call_log_api("GET", "/health")
+
+
+log_app = log_mcp.streamable_http_app()
+mount_mcp("log", LOG_PATH, log_app)
 
 # --------------------------------------------------------------------------- #
 # Review MCP - AI-powered multi-perspective review orchestrator
