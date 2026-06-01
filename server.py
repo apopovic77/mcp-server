@@ -2865,6 +2865,16 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
       - `delete_paragraph` + `paragraph_index`: remove one paragraph
         cleanly. Use this instead of replace-with-placeholder for
         cleanup. `text` is ignored.
+      - `replace_range` + `block_id` + `start_char_offset` +
+        `end_char_offset`: edit a substring inside ONE paragraph.
+        Drift-stable: block_id stays valid even when other agents
+        insert/delete paragraphs elsewhere in the doc. Use this for
+        precise quote-edits, typo-fixes inside long paragraphs,
+        targeted rewordings without retyping the whole paragraph.
+        Symmetric to the annotation-anchor address-grammar.
+        Optional `expected_text`: 409 if current paragraph_text
+        [start:end] doesn't match — race-guard against concurrent
+        in-paragraph edits.
 
     ## V2.7 concurrency + author guards (optional)
 
@@ -2902,6 +2912,13 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
             `update_paragraph_attrs`
         expected_version: optimistic-lock guard (see above)
         expected_author: author-aware guard (see above)
+        block_id: paragraph identifier from `doc_get_structured` —
+            required for `replace_range`
+        start_char_offset: substring start (0-based) — required for
+            `replace_range`
+        end_char_offset: substring end (exclusive) — required for
+            `replace_range`
+        expected_text: race-guard for `replace_range` (see above)
 
     Returns:
         applied: bool — false if mode='replace' and text equals current
@@ -2919,6 +2936,10 @@ async def content_doc_apply_text(
     attrs: Optional[Dict[str, Any]] = None,
     expected_version: Optional[int] = None,
     expected_author: Optional[str] = None,
+    block_id: Optional[str] = None,
+    start_char_offset: Optional[int] = None,
+    end_char_offset: Optional[int] = None,
+    expected_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Write into a collab-text CRDT post. See tool description for modes.
 
@@ -2941,6 +2962,14 @@ async def content_doc_apply_text(
         body["expected_version"] = expected_version
     if expected_author is not None:
         body["expected_author"] = expected_author
+    if block_id is not None:
+        body["block_id"] = block_id
+    if start_char_offset is not None:
+        body["start_char_offset"] = start_char_offset
+    if end_char_offset is not None:
+        body["end_char_offset"] = end_char_offset
+    if expected_text is not None:
+        body["expected_text"] = expected_text
     return await call_content_api(
         "POST",
         f"/api/v1/posts/{post_id}/crdt/apply",
