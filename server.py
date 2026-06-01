@@ -107,6 +107,7 @@ BUSINESS_PATH = "/business"
 COMM_PATH = "/comm"
 KNOWLEDGE_PATH = "/knowledge"
 STORY_PATH = "/story"
+LOG_PATH = "/log"
 
 # Tools API (for Tarot)
 TOOLS_API_BASE = os.getenv("TOOLS_API_BASE", "https://tools-api.arkturian.com")
@@ -125,6 +126,9 @@ STORY_API_KEY = os.getenv("STORY_API_KEY", "story_ark_secret_2025")
 
 # Knowledge API
 KNOWLEDGE_API_BASE = os.getenv("KNOWLEDGE_API_BASE", "https://knowledge-api.arkturian.com")
+
+# Log API — remote logging service (FastAPI + SQLite + WebSocket, 48h retention)
+LOG_API_BASE = os.getenv("LOG_API_BASE", "https://log-api.arkturian.com")
 
 # Review API
 REVIEW_API_BASE = os.getenv("REVIEW_API_BASE", "https://review-api.arkturian.com")
@@ -416,6 +420,25 @@ async def call_knowledge_api(
     return await _fetch_json(
         method,
         f"{KNOWLEDGE_API_BASE}{endpoint}",
+        headers={},
+        params=params,
+        json_body=json_body,
+        timeout=timeout,
+    )
+
+
+async def call_log_api(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    timeout: Optional[float] = None,
+) -> Any:
+    """Call Log API (no auth required — write-open, 48h retention)."""
+    return await _fetch_json(
+        method,
+        f"{LOG_API_BASE}{endpoint}",
         headers={},
         params=params,
         json_body=json_body,
@@ -2842,6 +2865,16 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
       - `delete_paragraph` + `paragraph_index`: remove one paragraph
         cleanly. Use this instead of replace-with-placeholder for
         cleanup. `text` is ignored.
+      - `replace_range` + `block_id` + `start_char_offset` +
+        `end_char_offset`: edit a substring inside ONE paragraph.
+        Drift-stable: block_id stays valid even when other agents
+        insert/delete paragraphs elsewhere in the doc. Use this for
+        precise quote-edits, typo-fixes inside long paragraphs,
+        targeted rewordings without retyping the whole paragraph.
+        Symmetric to the annotation-anchor address-grammar.
+        Optional `expected_text`: 409 if current paragraph_text
+        [start:end] doesn't match — race-guard against concurrent
+        in-paragraph edits.
 
     ## V2.7 concurrency + author guards (optional)
 
@@ -2879,6 +2912,13 @@ async def content_blocks_delete(post_id: int, block_id: int) -> Dict[str, Any]:
             `update_paragraph_attrs`
         expected_version: optimistic-lock guard (see above)
         expected_author: author-aware guard (see above)
+        block_id: paragraph identifier from `doc_get_structured` —
+            required for `replace_range`
+        start_char_offset: substring start (0-based) — required for
+            `replace_range`
+        end_char_offset: substring end (exclusive) — required for
+            `replace_range`
+        expected_text: race-guard for `replace_range` (see above)
 
     Returns:
         applied: bool — false if mode='replace' and text equals current
@@ -2896,6 +2936,10 @@ async def content_doc_apply_text(
     attrs: Optional[Dict[str, Any]] = None,
     expected_version: Optional[int] = None,
     expected_author: Optional[str] = None,
+    block_id: Optional[str] = None,
+    start_char_offset: Optional[int] = None,
+    end_char_offset: Optional[int] = None,
+    expected_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Write into a collab-text CRDT post. See tool description for modes.
 
@@ -2918,9 +2962,188 @@ async def content_doc_apply_text(
         body["expected_version"] = expected_version
     if expected_author is not None:
         body["expected_author"] = expected_author
+    if block_id is not None:
+        body["block_id"] = block_id
+    if start_char_offset is not None:
+        body["start_char_offset"] = start_char_offset
+    if end_char_offset is not None:
+        body["end_char_offset"] = end_char_offset
+    if expected_text is not None:
+        body["expected_text"] = expected_text
     return await call_content_api(
         "POST",
         f"/api/v1/posts/{post_id}/crdt/apply",
+        json_body=body,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Whiteboard Doc-Komm-System — typed Sections in collab docs.
+# Section-API is REST-only on content-api; these wrappers spare every
+# federation agent the curl + JWT dance. See Post 820 §10.10.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@content_mcp.tool(
+    name="sections_list",
+    description="""List all sections in a collab post.
+
+    Returns metadata + char-ranges per section — no body content. Use
+    sections_get to fetch a specific section's paragraphs/attrs.
+
+    Args:
+        post_id: the collab post id
+        type: optional filter — 'product' | 'question' | 'task' | 'annotation'
+        status: optional filter — 'open' | 'resolved' | ...
+
+    Returns: list of section summaries with id, type, attrs, char_start/end,
+    paragraph_count, status.
+    """,
+)
+async def content_sections_list(
+    post_id: int,
+    type: Optional[str] = None,
+    status: Optional[str] = None,
+) -> Any:
+    params: Dict[str, Any] = {}
+    if type is not None:
+        params["type"] = type
+    if status is not None:
+        params["status"] = status
+    return await call_content_api(
+        "GET",
+        f"/api/v1/posts/{post_id}/sections/",
+        params=params or None,
+    )
+
+
+@content_mcp.tool(
+    name="sections_get",
+    description="""Read a single section's full content — header attrs +
+    body paragraphs + nested reply-thread for questions.
+
+    Args:
+        post_id: the collab post id
+        section_id: the section UUID (e.g. 'q-4167e9ff9265')
+
+    Returns: section detail with attrs, paragraphs (incl. section_role),
+    and replies grouped by their open <reply> tags.
+    """,
+)
+async def content_sections_get(
+    post_id: int,
+    section_id: str,
+) -> Any:
+    return await call_content_api(
+        "GET",
+        f"/api/v1/posts/{post_id}/sections/{section_id}",
+    )
+
+
+@content_mcp.tool(
+    name="sections_create",
+    description="""Create a new typed Section inside a collab post.
+
+    Use this instead of `doc_apply_text(mode=append, text="<section>…")`
+    when you want a properly-stamped section block — the section_id is
+    generated server-side and every paragraph gets section_id /
+    section_type / section_role attributes that the read-view uses to
+    render it as a collapsible card.
+
+    ## Section types (Whiteboard Doc-Komm-System)
+
+      - `product`  — collaboratively-mutated artefact (HTML, code, draft).
+                     Body changes IN-PLACE; no reply-thread.
+                     Suggested attrs: name, mode (improve|draft|review),
+                     goal, language, target_users
+      - `question` — chat-substitute with reply-thread below.
+                     Suggested attrs: initiator, targets (comma-list),
+                     status (open|resolved)
+                     `initial_text` becomes the question's <main> body.
+      - `task`     — assigned-work item.
+                     Suggested attrs: assignee, status, due, priority
+      - `annotation` — anchored marker for inline quote-and-comment.
+                     Usually created by frontend selection-UI, not agents.
+                     Suggested attrs: initiator, anchor_paragraph_id,
+                     anchor_quote, anchor_start, anchor_end
+
+    `paragraph_index` lets you insert after a specific block (0-based;
+    fetch `doc_get_structured` first if you need to target a position).
+    Default: append at the end.
+
+    Args:
+        post_id: the collab post
+        type: 'product' | 'question' | 'task' | 'annotation'
+        attrs: dict of section attributes (see suggestions per type)
+        initial_text: optional body. For questions wrapped in <main>.
+            Empty body → server inserts a zero-width-space placeholder
+            so a cursor can focus into the empty section.
+        paragraph_index: 0-based insert-after position. None = append.
+
+    Returns: {id, type, attrs, role_start_index, role_end_index,
+    char_start, char_end, paragraph_count, status}
+    """,
+)
+async def content_sections_create(
+    post_id: int,
+    type: str,
+    attrs: Optional[Dict[str, Any]] = None,
+    initial_text: Optional[str] = None,
+    paragraph_index: Optional[int] = None,
+) -> Any:
+    body: Dict[str, Any] = {"type": type, "attrs": attrs or {}}
+    if initial_text is not None:
+        body["initial_text"] = initial_text
+    if paragraph_index is not None:
+        body["paragraph_index"] = paragraph_index
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/sections/",
+        json_body=body,
+    )
+
+
+@content_mcp.tool(
+    name="sections_reply",
+    description="""Append a reply INSIDE an existing question/annotation
+    section's reply-thread.
+
+    THIS IS THE PATTERN you need when chunk_committed pushes you a
+    paragraph with `section_id != null` and `requires_response=true`
+    (or you decide to chime in unprompted). The server wraps your text
+    in <reply by="<your name>" at="<ISO 8601>">…</reply> and stamps
+    section_id + section_role='reply' on the paragraphs. Read-view
+    renders it under the "X Antworten" thread of the section card.
+
+    NEVER use `doc_apply_text(mode=append, text=...)` to answer a
+    section — your reply lands OUTSIDE the section as a plain doc
+    paragraph and the frontend will not group it with the question.
+    (Bug-report 2026-06-01: ArkturianClaude tripped over this; pattern
+    docked in Post 820 §10.10.)
+
+    Args:
+        post_id: the collab post id
+        section_id: the section UUID (from the chunk_committed push)
+        text: your reply body (Markdown). Mentions like @CloudV2 fire
+              chunk_committed pushes to those agents automatically.
+        by: optional override of the `by` attr. NOT recommended for
+            federation agents — JWT identity is the canonical stamp.
+
+    Returns: {section_id, by, at}
+    """,
+)
+async def content_sections_reply(
+    post_id: int,
+    section_id: str,
+    text: str,
+    by: Optional[str] = None,
+) -> Any:
+    body: Dict[str, Any] = {"text": text}
+    if by is not None:
+        body["by"] = by
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/sections/{section_id}/reply",
         json_body=body,
     )
 
@@ -4824,6 +5047,178 @@ async def knowledge_collection_ask(
 
 knowledge_app = knowledge_mcp.streamable_http_app()
 mount_mcp("knowledge", KNOWLEDGE_PATH, knowledge_app)
+
+# --------------------------------------------------------------------------- #
+# Log MCP — remote logging service (log-api.arkturian.com)
+# --------------------------------------------------------------------------- #
+#
+# Backs the 48h-retention FastAPI+SQLite+WebSocket log-api. Agents that
+# observe an external app (Unity, Web, CLI) read fresh errors here without
+# leaving the federation. Push side is also exposed for completeness but
+# the typical pattern is push-from-the-app, read-from-the-agent.
+log_mcp = FastMCP(
+    name="log-api",
+    streamable_http_path="/",
+    stateless_http=True,
+    log_level="INFO",
+)
+
+
+@log_mcp.tool(
+    name="log_latest",
+    description="""Get the most recent logs from the *latest* session.
+
+    Filters (all optional):
+    - type: filter by log type (Log, Warning, Error, Exception)
+    - source: filter by source/component name
+    - search: free-text substring match on message
+    - limit: max entries returned (default 100)
+
+    Typical use: "what just went wrong in <whatever>" — returns the
+    freshest entries from the most-recent session without having to
+    discover its session_id first.""",
+)
+async def log_latest(
+    type: Optional[str] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+) -> Any:
+    params: Dict[str, Any] = {"limit": limit}
+    if type:
+        params["type"] = type
+    if source:
+        params["source"] = source
+    if search:
+        params["search"] = search
+    return await call_log_api("GET", "/api/v1/sessions/latest/logs", params=params)
+
+
+@log_mcp.tool(
+    name="log_sessions_list",
+    description="""List all known log-api sessions (newest first).
+
+    Each session represents one observed app/run instance. Returns id,
+    name, created_at, log counts per level. Use this to discover which
+    session_id to pull logs from when log_latest is too narrow.""",
+)
+async def log_sessions_list() -> Any:
+    return await call_log_api("GET", "/api/v1/sessions")
+
+
+@log_mcp.tool(
+    name="log_session_logs",
+    description="""Get logs for a specific session_id.
+
+    Useful when investigating an older session that isn't the latest.
+    Same `type`/`source`/`search`/`limit` filter semantics as
+    log_latest.""",
+)
+async def log_session_logs(
+    session_id: str,
+    type: Optional[str] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+) -> Any:
+    params: Dict[str, Any] = {"limit": limit}
+    if type:
+        params["type"] = type
+    if source:
+        params["source"] = source
+    if search:
+        params["search"] = search
+    return await call_log_api(
+        "GET", f"/api/v1/sessions/{session_id}/logs", params=params,
+    )
+
+
+@log_mcp.tool(
+    name="log_session_get",
+    description="Get metadata for a single session (created_at, name, log "
+                "counts, last_seen).",
+)
+async def log_session_get(session_id: str) -> Any:
+    return await call_log_api("GET", f"/api/v1/sessions/{session_id}")
+
+
+@log_mcp.tool(
+    name="log_stats",
+    description="""Quick stats across the last 24h: sessions seen, total
+    log entries by level, top error sources. Use as a first-glance health
+    check before drilling into specific sessions.""",
+)
+async def log_stats() -> Any:
+    return await call_log_api("GET", "/api/v1/stats")
+
+
+@log_mcp.tool(
+    name="log_session_create",
+    description="""Create a new log session. Returns the new session_id.
+
+    Body fields:
+    - name: human-readable label for the session
+    - source: optional source/component name (e.g. "unity", "web", "cli")
+    - metadata: optional dict of extra fields
+
+    Most apps create their own session via direct HTTP POST at startup —
+    this MCP path is primarily for one-off scripted runs.""",
+)
+async def log_session_create(
+    name: str,
+    source: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    body: Dict[str, Any] = {"name": name}
+    if source:
+        body["source"] = source
+    if metadata:
+        body["metadata"] = metadata
+    return await call_log_api("POST", "/api/v1/sessions", json_body=body)
+
+
+@log_mcp.tool(
+    name="log_push",
+    description="""Push a batch of log entries to a session.
+
+    Body fields:
+    - session_id: target session
+    - entries: list of {type, source, message, timestamp?} dicts.
+      type: Log | Warning | Error | Exception.
+
+    Returns count of accepted entries.""",
+)
+async def log_push(
+    session_id: str,
+    entries: List[Dict[str, Any]],
+) -> Any:
+    return await call_log_api(
+        "POST",
+        f"/api/v1/sessions/{session_id}/logs",
+        json_body=entries,
+    )
+
+
+@log_mcp.tool(
+    name="log_session_profiling",
+    description="Profiling data for a session (if recorded by the app).",
+)
+async def log_session_profiling(session_id: str) -> Any:
+    return await call_log_api(
+        "GET", f"/api/v1/sessions/{session_id}/profiling",
+    )
+
+
+@log_mcp.tool(
+    name="log_service_health",
+    description="Health check of the log-api itself (ping).",
+)
+async def log_service_health() -> Any:
+    return await call_log_api("GET", "/health")
+
+
+log_app = log_mcp.streamable_http_app()
+mount_mcp("log", LOG_PATH, log_app)
 
 # --------------------------------------------------------------------------- #
 # Review MCP - AI-powered multi-perspective review orchestrator
