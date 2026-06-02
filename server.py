@@ -3208,8 +3208,22 @@ async def content_sections_decline(
       - threshold: 'majority' (default — >50% of eligible),
                    'all' (every eligible voter cast, unanimous), or
                    a number (top choice needs ≥N votes)
-      - action_type/action_target: optional, used by A.D.2 derived
-        actions (not yet implemented)
+      - action_type: 'none' | 'task_assign' | 'status_change'
+      - action_target: required when action_type != 'none' — the
+        section_id of the task/question to mutate on tally. For
+        task_assign the target must be a task; for status_change
+        target must be question or task AND every option must be
+        a legal status of that target type.
+
+    Derived actions (live since Iteration D):
+      - On tally hit, the server applies the winning option:
+          * task_assign  → sets target.assignee = winner +
+                           assigned_by_vote/assigned_at stamps
+          * status_change → moves target.status to winner +
+                            status_changed_by_vote/at stamps
+      - Action outcome surfaces on the vote section as
+        action_applied=true|false, action_outcome=applied|error,
+        action_error=<message> on failure.
 
     Behavior:
       - voter must be eligible (in voters list, or voters='open')
@@ -3217,6 +3231,9 @@ async def content_sections_decline(
       - votes are idempotent per voter — re-vote OVERWRITES previous
       - on tally hit: status=tallied, winner stamped, tallied_at/by
         stamped; further votes rejected as vote_not_open
+      - tied state: when all eligible voters cast and no winner
+        dominates, status=tied (terminal — resolution is a fresh
+        narrower vote)
 
     Returns 403 not_an_eligible_voter / 400 choice_not_in_options /
     409 vote_not_open accordingly.
