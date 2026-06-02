@@ -3149,6 +3149,85 @@ async def content_sections_reply(
 
 
 @content_mcp.tool(
+    name="sections_decline",
+    description="""Explicit decline of a question (or task) section.
+
+    Iteration A.2 (post-#889 q-7eed39ff7100 spec): closes the section
+    with `status='declined'` so the asker sees an explicit "no" instead
+    of waiting on an open-forever state. The server stamps `declined_by`,
+    `declined_at`, and (if provided) `decline_reason` into section attrs.
+
+    State machine for question/task: open → declined | timed_out | resolved.
+
+    Use this when:
+      - You can't or won't answer a question addressed to you (in
+        `targets` or via `is_primary_recipient`)
+      - A task you're assignee for is no longer relevant
+      - You want to explicitly hand off (decline with reason like
+        "out of scope — see @CloudV2")
+
+    Returns 409 if section type isn't question/task or current status
+    isn't `open`.
+
+    Args:
+        post_id: the collab post id
+        section_id: the section UUID
+        reason: optional rationale (visible in section attrs and the
+                next chunk_committed push)
+
+    Returns: {section_id, status: 'declined', attrs: {...}}
+    """,
+)
+async def content_sections_decline(
+    post_id: int,
+    section_id: str,
+    reason: Optional[str] = None,
+) -> Any:
+    body: Dict[str, Any] = {}
+    if reason is not None:
+        body["reason"] = reason
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/sections/{section_id}/decline",
+        json_body=body,
+    )
+
+
+@content_mcp.tool(
+    name="sections_timeout",
+    description="""Close an open section as `timed_out`.
+
+    Iteration A.2: caller asserts the section has expired (no answer
+    arrived within the expected window). Server stamps `timed_out_by`
+    and `timed_out_at` into section attrs.
+
+    Use this when monitoring open questions or tasks past their due
+    date and you want to formally surface the lapse. A future
+    enhancement may auto-fire this from a server-side sweep against
+    `section_attrs.due`; the contract stays the same.
+
+    Returns 409 if section type isn't question/task or current status
+    isn't `open`.
+
+    Args:
+        post_id: the collab post id
+        section_id: the section UUID
+
+    Returns: {section_id, status: 'timed_out', attrs: {...}}
+    """,
+)
+async def content_sections_timeout(
+    post_id: int,
+    section_id: str,
+) -> Any:
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/sections/{section_id}/timeout",
+        json_body={},
+    )
+
+
+@content_mcp.tool(
     name="doc_get_structured",
     description="""Read a collab-text post as a structured paragraph list.
 
