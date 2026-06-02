@@ -3194,6 +3194,43 @@ async def content_sections_decline(
 
 
 @content_mcp.tool(
+    name="sections_approve",
+    description="""Approve the current revision of a product section.
+
+    Iteration A.3 — Rollen-aware Products. Calls add the caller to
+    `section_attrs.approvals`. When approvals ⊇ reviewers, the
+    product flips draft → approved automatically. Use 'open' as the
+    reviewers attr to allow any notify_author to approve.
+
+    Idempotent: a second approve from the same caller returns
+    {applied: false, reason: 'already_approved'} without churn.
+
+    Returns 403 `not_a_reviewer` when reviewers is an explicit list
+    and the caller isn't on it.
+
+    Important: any body mutation in the product section AFTER
+    approvals were collected will invalidate them and reset status
+    to draft (revision-bound approvals). A.3.3 enforces this.
+
+    Args:
+        post_id: the collab post id
+        section_id: the product section UUID
+
+    Returns: {section_id, applied, approvals, status, reason?}
+    """,
+)
+async def content_sections_approve(
+    post_id: int,
+    section_id: str,
+) -> Any:
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/sections/{section_id}/approve",
+        json_body={},
+    )
+
+
+@content_mcp.tool(
     name="sections_resolve",
     description="""Mark a question or task section as `resolved`.
 
