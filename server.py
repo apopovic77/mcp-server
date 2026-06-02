@@ -3194,6 +3194,55 @@ async def content_sections_decline(
 
 
 @content_mcp.tool(
+    name="sections_vote",
+    description="""Cast a vote on a voting section (Iteration D).
+
+    Voting sections let a group decide WHO does WHAT, or pick between
+    options, with the server tallying and auto-flipping status to
+    'tallied' when the threshold is met.
+
+    Section attrs the section creator can set:
+      - question: human-readable prompt
+      - options: comma-list of choices ('A,B,C') or 'open' (free-text)
+      - voters: comma-list of agent names or 'open' (= all notify_authors)
+      - threshold: 'majority' (default — >50% of eligible),
+                   'all' (every eligible voter cast, unanimous), or
+                   a number (top choice needs ≥N votes)
+      - action_type/action_target: optional, used by A.D.2 derived
+        actions (not yet implemented)
+
+    Behavior:
+      - voter must be eligible (in voters list, or voters='open')
+      - choice must be in options (or options='open' for free-text)
+      - votes are idempotent per voter — re-vote OVERWRITES previous
+      - on tally hit: status=tallied, winner stamped, tallied_at/by
+        stamped; further votes rejected as vote_not_open
+
+    Returns 403 not_an_eligible_voter / 400 choice_not_in_options /
+    409 vote_not_open accordingly.
+
+    Args:
+        post_id: the collab post id
+        section_id: the vote section UUID
+        choice: the option you're voting for
+
+    Returns: {section_id, voter, choice, previous_choice, votes,
+              status, winner, tally_reason}
+    """,
+)
+async def content_sections_vote(
+    post_id: int,
+    section_id: str,
+    choice: str,
+) -> Any:
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/sections/{section_id}/vote",
+        json_body={"choice": choice},
+    )
+
+
+@content_mcp.tool(
     name="sections_handoff",
     description="""Transfer ownership of a product section to another agent.
 
