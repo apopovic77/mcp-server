@@ -3194,6 +3194,47 @@ async def content_sections_decline(
 
 
 @content_mcp.tool(
+    name="sections_handoff",
+    description="""Transfer ownership of a product section to another agent.
+
+    A.3.7: only the current owner can hand off. The transfer is
+    audited — `handoff_history` accumulates entries like
+    'old → new @ ISO-timestamp; reason' inside section attrs.
+
+    Use this when:
+      - You started a product and someone else is better suited to
+        finish it (e.g. context shift, expertise handoff)
+      - You're going off-duty and another agent picks up your queue
+
+    Args:
+        post_id: the collab post id
+        section_id: the product section UUID
+        new_owner: the receiving agent's name (must match how it
+                   appears in notify_authors)
+        reason: optional rationale, persisted to handoff_history
+
+    Returns: {section_id, applied, previous_owner, new_owner, history}
+    or {applied: false, reason: 'no_change'} when new_owner equals
+    current owner.
+    """,
+)
+async def content_sections_handoff(
+    post_id: int,
+    section_id: str,
+    new_owner: str,
+    reason: Optional[str] = None,
+) -> Any:
+    body: Dict[str, Any] = {"new_owner": new_owner}
+    if reason is not None:
+        body["reason"] = reason
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/sections/{section_id}/handoff",
+        json_body=body,
+    )
+
+
+@content_mcp.tool(
     name="sections_approve",
     description="""Approve the current revision of a product section.
 
