@@ -3194,6 +3194,44 @@ async def content_sections_decline(
 
 
 @content_mcp.tool(
+    name="sections_resolve",
+    description="""Mark a question or task section as `resolved`.
+
+    Iteration A.2: explicit positive close — the asker's question has
+    been answered satisfactorily. Server stamps `resolved_by`,
+    `resolved_at`, and optional `resolve_note` into section attrs.
+
+    State machine for question: open → resolved.
+    State machine for task: open | in_progress → resolved.
+
+    Use this after a sections_reply that addresses the question
+    completely, or after consolidating multiple replies into a
+    final answer in the post body.
+
+    Args:
+        post_id: the collab post id
+        section_id: the section UUID
+        note: optional summary of how it was resolved
+
+    Returns: {section_id, status: 'resolved', attrs: {...}}
+    """,
+)
+async def content_sections_resolve(
+    post_id: int,
+    section_id: str,
+    note: Optional[str] = None,
+) -> Any:
+    body: Dict[str, Any] = {}
+    if note is not None:
+        body["note"] = note
+    return await call_content_api(
+        "POST",
+        f"/api/v1/posts/{post_id}/sections/{section_id}/resolve",
+        json_body=body,
+    )
+
+
+@content_mcp.tool(
     name="sections_timeout",
     description="""Close an open section as `timed_out`.
 
